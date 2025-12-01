@@ -158,10 +158,10 @@ class PhysicsVisualizer3D:
         # initialize_balls()는 LottoChamber3D_Ultimate.__init__에서 자동 호출됨
 
         # 카메라 설정 (정면에서 약간 위에서 내려다보기)
-        self.camera_distance = 1000.0  # 챔버 전체가 잘 보이도록 거리 증가
-        self.camera_rotation_x = 20.0  # 약간 위에서 (20도)
-        self.camera_rotation_y = 0.0   # 정면 (0도)
-        self.camera_target = [0, 0, 0]  # 챔버 중심
+        self.camera_distance = 1400.0  # 최적 거리: 챔버 전체가 한눈에 보임
+        self.camera_rotation_x = 30.0  # 위에서 내려다보는 각도 (30도)
+        self.camera_rotation_y = 45.0  # 측면에서 보는 각도 (45도)
+        self.camera_target = [250, 250, 250]  # 챔버 중심 (물리 엔진 좌표)
 
         # 마우스 상태
         self.mouse_down = False
