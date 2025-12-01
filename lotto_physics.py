@@ -286,12 +286,16 @@ class LottoChamber3D_Ultimate:
                     idx += 1
 
     # ==================== 물리 법칙 적용 ====================
-    def step(self):
+    def step(self, dt=None):
         """한 타임스텝 시뮬레이션"""
+        # dt 파라미터 지원 (시각화 호환성)
+        if dt is None:
+            dt = self.dt
+
         # 1. 모든 힘 적용 (벡터 합성)
         for ball in self.balls:
             if not ball.extracted:
-                self.apply_forces(ball, self.dt)
+                self.apply_forces(ball, dt)
 
         # 2. 공-공 충돌
         self._check_ball_collisions()
@@ -305,7 +309,7 @@ class LottoChamber3D_Ultimate:
         self._check_extraction()
 
         # 5. 시간 증가
-        self.time += self.dt
+        self.time += dt
 
     def apply_forces(self, ball: Ball3D, dt: float, batch_idx: int = -1):
         """
