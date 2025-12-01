@@ -168,13 +168,13 @@ class LottoChamber3D_Ultimate:
     61-67: 고급 효과 (음향, 난류 와류, 벽면 효과)
     """
 
-    # 챔버 크기 (mm) - 표준 로또 추첨기 실측치 기반
+    # 챔버 크기 (mm) - 표준 로또 추첨기 구형 챔버
     # 참고: 일반적인 중형 에어믹스 추첨기 (BS1 모델 등)
-    # 전체: 높이 1820mm × 너비 700mm × 깊이 610mm
-    # 믹싱 챔버는 전체 크기의 약 50-60% 정도로 추정
-    width: float = 350.0  # X 방향 (약 700mm 내부의 50%)
-    depth: float = 305.0  # Y 방향 (약 610mm 내부의 50%)
-    height: float = 900.0  # Z 방향 (약 1820mm 내부의 50%)
+    # 믹싱 챔버: 구형 (직경 약 300-350mm)
+    # width, depth, height는 구를 감싸는 바운딩 박스
+    width: float = 300.0   # X 방향 (구 직경)
+    depth: float = 300.0   # Y 방향 (구 직경)
+    height: float = 300.0  # Z 방향 (구 직경)
 
     # 공 설정
     num_balls: int = 45
@@ -756,50 +756,44 @@ class LottoChamber3D_Ultimate:
         ball2.charge -= transfer
 
     def _check_wall_collision(self, ball: Ball3D):
-        """벽 충돌 처리"""
+        """구형 챔버 벽 충돌 처리"""
         changed = False
 
-        # X 방향
-        if ball.x - ball.radius < 0:
-            ball.x = ball.radius
-            ball.vx = -ball.vx * self.restitution
-            ball.wy = ball.wy * (1 - self.friction)  # 마찰로 회전 감소
-            ball.wz = ball.wz * (1 - self.friction)
-            changed = True
-        elif ball.x + ball.radius > self.width:
-            ball.x = self.width - ball.radius
-            ball.vx = -ball.vx * self.restitution
-            ball.wy = ball.wy * (1 - self.friction)
-            ball.wz = ball.wz * (1 - self.friction)
-            changed = True
+        # 구형 챔버: 중심점 기준
+        cx, cy, cz = self.width / 2, self.depth / 2, self.height / 2
 
-        # Y 방향
-        if ball.y - ball.radius < 0:
-            ball.y = ball.radius
-            ball.vy = -ball.vy * self.restitution
-            ball.wx = ball.wx * (1 - self.friction)
-            ball.wz = ball.wz * (1 - self.friction)
-            changed = True
-        elif ball.y + ball.radius > self.depth:
-            ball.y = self.depth - ball.radius
-            ball.vy = -ball.vy * self.restitution
-            ball.wx = ball.wx * (1 - self.friction)
-            ball.wz = ball.wz * (1 - self.friction)
-            changed = True
+        # 3D 공간에서 중심으로부터의 거리
+        dx = ball.x - cx
+        dy = ball.y - cy
+        dz = ball.z - cz
+        dist_from_center = np.sqrt(dx**2 + dy**2 + dz**2)
 
-        # Z 방향
-        if ball.z - ball.radius < 0:
-            ball.z = ball.radius
-            ball.vz = -ball.vz * self.restitution
-            ball.wx = ball.wx * (1 - self.friction)
-            ball.wy = ball.wy * (1 - self.friction)
-            changed = True
-        elif ball.z + ball.radius > self.height:
-            ball.z = self.height - ball.radius
-            ball.vz = -ball.vz * self.restitution
-            ball.wx = ball.wx * (1 - self.friction)
-            ball.wy = ball.wy * (1 - self.friction)
-            changed = True
+        # 구형 벽 충돌
+        if dist_from_center + ball.radius > self.chamber_radius:
+            # 충돌 처리
+            if dist_from_center > 0:
+                # 법선 벡터 (중심에서 공으로)
+                nx = dx / dist_from_center
+                ny = dy / dist_from_center
+                nz = dz / dist_from_center
+
+                # 공을 벽 안쪽으로 밀어냄
+                overlap = (dist_from_center + ball.radius) - self.chamber_radius
+                ball.x -= nx * overlap
+                ball.y -= ny * overlap
+                ball.z -= nz * overlap
+
+                # 속도 반사 (법선 방향 반전)
+                v_normal = ball.vx * nx + ball.vy * ny + ball.vz * nz
+                ball.vx -= 2 * v_normal * nx * self.restitution
+                ball.vy -= 2 * v_normal * ny * self.restitution
+                ball.vz -= 2 * v_normal * nz * self.restitution
+
+                # 회전 마찰
+                ball.wx = ball.wx * (1 - self.friction)
+                ball.wy = ball.wy * (1 - self.friction)
+                ball.wz = ball.wz * (1 - self.friction)
+                changed = True
 
         if changed:
             ball.collision_count += 1
