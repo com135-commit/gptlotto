@@ -450,6 +450,9 @@ class PhysicsVisualizer3D:
         """추첨기 챔버 (투명 구체 + 상하 캡) 그리기 - 개선된 유리 재질"""
         glPushMatrix()
 
+        # 물리 엔진 좌표계와 맞추기 위해 챔버 중심을 (250, 250, 250)으로 이동
+        glTranslatef(250, 250, 250)
+
         # COLOR_MATERIAL 비활성화 (재질 색상이 변하지 않도록)
         glDisable(GL_COLOR_MATERIAL)
 
@@ -471,7 +474,7 @@ class PhysicsVisualizer3D:
         # 반투명 솔리드 구체로 챔버 표현 (성능 최적화)
         quadric = gluNewQuadric()
         gluQuadricNormals(quadric, GLU_SMOOTH)  # 부드러운 노말
-        gluSphere(quadric, 250, 24, 24)  # 48→24로 감소 (성능 향상)
+        gluSphere(quadric, 250, 24, 24)  # 반지름 250mm
         gluDeleteQuadric(quadric)
 
         # 상단 캡 (출구) - 메탈 재질
@@ -493,7 +496,7 @@ class PhysicsVisualizer3D:
         glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, metal_shininess)
 
         glPushMatrix()
-        glTranslatef(0, 0, 250)  # 챔버 최상단에서 시작
+        glTranslatef(0, 0, 0)  # 챔버 최상단 (중심 기준)
 
         # 출구 튜브 (부드럽게) - 반지름 30mm (직경 60mm)
         quadric = gluNewQuadric()
