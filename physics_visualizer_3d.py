@@ -119,7 +119,7 @@ class PhysicsThread(threading.Thread):
                         'wx': b.wx,  # 각속도 X축
                         'wy': b.wy,  # 각속도 Y축
                         'wz': b.wz,  # 각속도 Z축
-                        'active': b.active,
+                        'active': not b.extracted,
                         'number': b.number,
                         'mass': b.mass
                     }
@@ -980,7 +980,7 @@ class PhysicsVisualizer3D:
         phase_text = f"단계: {self.engine.phase}"
         jet_power_text = f"풍량: {self.engine.jet_power*100:.0f}%"
         jet_force_text = f"풍압: {self.jet_force_multiplier*100:.0f}% ({self.engine.jet_force:.0f} mm/s²)"
-        active_count = sum(1 for b in self.engine.balls if b.active)
+        active_count = sum(1 for b in self.engine.balls if not b.extracted)
         balls_text = f"챔버 내 공: {active_count}개"
 
         texts = [
@@ -1381,7 +1381,7 @@ class PhysicsVisualizer3D:
         print("=" * 60)
 
         # 디버그: 초기 상태 확인
-        active_balls = sum(1 for b in self.engine.balls if b.active)
+        active_balls = sum(1 for b in self.engine.balls if not b.extracted)
         print(f"[DEBUG] Initial state: {active_balls} active balls")
         print(f"[DEBUG] Camera: dist={self.camera_distance:.1f}, rot_x={self.camera_rotation_x:.1f}, rot_y={self.camera_rotation_y:.1f}")
         print("=" * 60 + "\n")
