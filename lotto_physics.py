@@ -441,8 +441,9 @@ class LottoChamber3D_Ultimate:
         ball.wz *= (1 - angular_drag * dt)
 
         # ========== 안전장치: 속도 제한 및 NaN/Inf 체크 ==========
-        # 최대 속도 제한 (현실적인 값: ~10 m/s = 10000 mm/s)
-        MAX_SPEED = 10000.0  # mm/s
+        # 최대 속도 제한 (현실적인 값: ~30 m/s = 30000 mm/s)
+        # 로또 공은 강한 공기 제트로 인해 빠르게 움직일 수 있음
+        MAX_SPEED = 30000.0  # mm/s (30 m/s)
         speed = ball.speed
         if speed > MAX_SPEED:
             scale = MAX_SPEED / speed
