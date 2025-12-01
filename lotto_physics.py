@@ -227,6 +227,9 @@ class LottoChamber3D_Ultimate:
 
     def __post_init__(self):
         """초기화"""
+        # 챔버 반지름 계산 (직육면체를 원통으로 근사)
+        self.chamber_radius = min(self.width, self.depth) / 2
+
         # Jet 위치 설정 (바닥 4개 코너)
         if not self.jet_positions:
             margin = 50.0
