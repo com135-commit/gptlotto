@@ -262,43 +262,59 @@ class LottoChamber3D_Ultimate:
             self._initialize_balls()
 
     def _initialize_balls(self):
-        """45개 공 초기화 - 랜덤 배치"""
+        """45개 공 초기화 - 구형 챔버 내부에 랜덤 배치"""
         self.balls = []
 
-        # 격자 배치 후 약간의 랜덤 perturbation
-        grid_size = int(np.ceil(self.num_balls ** (1/3)))
-        spacing = min(self.width, self.depth, self.height * 0.6) / (grid_size + 1)
+        # 구형 챔버 중심
+        cx, cy, cz = self.width / 2, self.depth / 2, self.height / 2
+
+        # 안전한 초기화 반지름 (챔버 반지름의 70%)
+        safe_radius = self.chamber_radius * 0.7
 
         idx = 0
-        for i in range(grid_size):
-            for j in range(grid_size):
-                for k in range(grid_size):
-                    if idx >= self.num_balls:
-                        break
+        attempts = 0
+        max_attempts = 1000
 
-                    # 격자 위치 + 랜덤 perturbation
-                    x = (i + 1) * spacing + self.rng.uniform(-spacing*0.2, spacing*0.2)
-                    y = (j + 1) * spacing + self.rng.uniform(-spacing*0.2, spacing*0.2)
-                    z = (k + 1) * spacing + self.ball_radius + self.rng.uniform(0, spacing*0.2)
+        while idx < self.num_balls and attempts < max_attempts:
+            # 구 내부에 균등하게 랜덤 배치 (rejection sampling)
+            # 구 중심 기준 구면좌표계 사용
+            theta = self.rng.uniform(0, 2 * np.pi)  # 방위각
+            phi = np.arccos(self.rng.uniform(-1, 1))  # 극각
+            r = safe_radius * (self.rng.uniform(0, 1) ** (1/3))  # 반지름 (균등 분포)
 
-                    # 경계 확인
-                    x = np.clip(x, self.ball_radius, self.width - self.ball_radius)
-                    y = np.clip(y, self.ball_radius, self.depth - self.ball_radius)
-                    z = np.clip(z, self.ball_radius, self.height - self.ball_radius)
+            # 구면좌표 → 직교좌표
+            x = cx + r * np.sin(phi) * np.cos(theta)
+            y = cy + r * np.sin(phi) * np.sin(theta)
+            z = cz + r * np.cos(phi)
 
-                    ball = Ball3D(
-                        number=idx + 1,
-                        x=x, y=y, z=z,
-                        vx=self.rng.uniform(-100, 100),
-                        vy=self.rng.uniform(-100, 100),
-                        vz=self.rng.uniform(0, 200),
-                        wx=self.rng.uniform(-10, 10),
-                        wy=self.rng.uniform(-10, 10),
-                        wz=self.rng.uniform(-10, 10)
-                    )
+            # 다른 공들과 겹치지 않는지 확인
+            min_dist = self.ball_radius * 2.2  # 최소 거리 (약간의 여유)
+            overlap = False
+            for existing_ball in self.balls:
+                dx = x - existing_ball.x
+                dy = y - existing_ball.y
+                dz = z - existing_ball.z
+                dist = np.sqrt(dx**2 + dy**2 + dz**2)
+                if dist < min_dist:
+                    overlap = True
+                    break
 
-                    self.balls.append(ball)
-                    idx += 1
+            if not overlap:
+                ball = Ball3D(
+                    number=idx + 1,
+                    x=x, y=y, z=z,
+                    vx=self.rng.uniform(-100, 100),
+                    vy=self.rng.uniform(-100, 100),
+                    vz=self.rng.uniform(0, 200),
+                    wx=self.rng.uniform(-10, 10),
+                    wy=self.rng.uniform(-10, 10),
+                    wz=self.rng.uniform(-10, 10)
+                )
+
+                self.balls.append(ball)
+                idx += 1
+
+            attempts += 1
 
     # ==================== 물리 법칙 적용 ====================
     def step(self, dt=None):
