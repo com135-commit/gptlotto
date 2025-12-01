@@ -327,23 +327,30 @@ class LottoChamber3D_Ultimate:
         if dt is None:
             dt = self.dt
 
-        # 1. 모든 힘 적용 (벡터 합성)
+        # 1. 모든 힘 적용 (벡터 합성) - 속도 업데이트
         for ball in self.balls:
             if not ball.extracted:
                 self.apply_forces(ball, dt)
 
-        # 2. 공-공 충돌
+        # 2. 위치 업데이트 (v * dt)
+        for ball in self.balls:
+            if not ball.extracted:
+                ball.x += ball.vx * dt
+                ball.y += ball.vy * dt
+                ball.z += ball.vz * dt
+
+        # 3. 공-공 충돌
         self._check_ball_collisions()
 
-        # 3. 벽 충돌
+        # 4. 벽 충돌
         for ball in self.balls:
             if not ball.extracted:
                 self._check_wall_collision(ball)
 
-        # 4. 추출 확인
+        # 5. 추출 확인
         self._check_extraction()
 
-        # 5. 시간 증가
+        # 6. 시간 증가
         self.time += dt
 
     def apply_forces(self, ball: Ball3D, dt: float, batch_idx: int = -1):
