@@ -496,7 +496,7 @@ class PhysicsVisualizer3D:
         glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, metal_shininess)
 
         glPushMatrix()
-        glTranslatef(0, 0, 0)  # 챔버 최상단 (중심 기준)
+        glTranslatef(0, 0, 250)  # 챔버 최상단 (구 반지름 250mm)
 
         # 출구 튜브 (부드럽게) - 반지름 30mm (직경 60mm)
         quadric = gluNewQuadric()
@@ -518,11 +518,11 @@ class PhysicsVisualizer3D:
         glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, dark_metal_shininess)
 
         glPushMatrix()
-        glTranslatef(0, 0, -260)  # 아래쪽
+        glTranslatef(0, 0, -250)  # 챔버 최하단 (구 반지름 250mm)
         glRotatef(180, 1, 0, 0)
         quadric = gluNewQuadric()
         gluQuadricNormals(quadric, GLU_SMOOTH)
-        gluDisk(quadric, 0, 60, 24, 1)  # 16→24로 증가
+        gluDisk(quadric, 0, 60, 24, 1)  # 공기 유입구
         gluDeleteQuadric(quadric)
         glPopMatrix()
 
