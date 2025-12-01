@@ -168,13 +168,15 @@ class LottoChamber3D_Ultimate:
     61-67: 고급 효과 (음향, 난류 와류, 벽면 효과)
     """
 
-    # 챔버 크기 (mm) - 표준 로또 추첨기 구형 챔버
-    # 참고: 일반적인 중형 에어믹스 추첨기 (BS1 모델 등)
-    # 믹싱 챔버: 구형 (직경 약 300-350mm)
+    # 챔버 크기 (mm) - 비너스(Venus) 추첨기 공식 스펙
+    # 형태: 구형(Sphere) 챔버
+    # 직경: 500mm (반지름 250mm)
+    # 재질: 투명 플렉시글라스
+    # 최대 수용: 90개 볼 (로또 6/45는 45개 사용)
     # width, depth, height는 구를 감싸는 바운딩 박스
-    width: float = 300.0   # X 방향 (구 직경)
-    depth: float = 300.0   # Y 방향 (구 직경)
-    height: float = 300.0  # Z 방향 (구 직경)
+    width: float = 500.0   # X 방향 (구 직경)
+    depth: float = 500.0   # Y 방향 (구 직경)
+    height: float = 500.0  # Z 방향 (구 직경)
 
     # 공 설정
     num_balls: int = 45
