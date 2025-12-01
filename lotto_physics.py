@@ -218,6 +218,13 @@ class LottoChamber3D_Ultimate:
     total_collisions: int = 0
     total_energy: float = 0.0
 
+    # 추첨 단계 관리
+    phase: str = "INITIAL"  # INITIAL, MIXING, EXTRACTING, COMPLETE
+    phase_timer: float = 0.0
+    jet_power: float = 1.0  # 0.0 ~ 1.0
+    extracted_count: int = 0
+    captured_ball: Optional[Ball3D] = None
+
     def __post_init__(self):
         """초기화"""
         # Jet 위치 설정 (바닥 4개 코너)
