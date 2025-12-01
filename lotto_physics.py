@@ -262,30 +262,34 @@ class LottoChamber3D_Ultimate:
             self._initialize_balls()
 
     def _initialize_balls(self):
-        """45개 공 초기화 - 구형 챔버 내부에 랜덤 배치"""
+        """45개 공 초기화 - 구형 챔버 바닥에 쌓임 (중력 고려)"""
         self.balls = []
 
         # 구형 챔버 중심
         cx, cy, cz = self.width / 2, self.depth / 2, self.height / 2
 
-        # 안전한 초기화 반지름 (챔버 반지름의 70%)
-        safe_radius = self.chamber_radius * 0.7
+        # 공들은 바닥 부분에 쌓임 (실제 로또 기계처럼)
+        # z 축이 높이이므로, 낮은 z 값(바닥)에 배치
+        bottom_center_z = cz - self.chamber_radius + self.ball_radius * 3  # 바닥에서 약간 위
+
+        # 바닥 부분에만 배치하기 위한 반지름 (원형 바닥 영역)
+        bottom_radius = self.chamber_radius * 0.5  # 바닥 원의 50% 영역
 
         idx = 0
         attempts = 0
         max_attempts = 1000
 
         while idx < self.num_balls and attempts < max_attempts:
-            # 구 내부에 균등하게 랜덤 배치 (rejection sampling)
-            # 구 중심 기준 구면좌표계 사용
-            theta = self.rng.uniform(0, 2 * np.pi)  # 방위각
-            phi = np.arccos(self.rng.uniform(-1, 1))  # 극각
-            r = safe_radius * (self.rng.uniform(0, 1) ** (1/3))  # 반지름 (균등 분포)
+            # 바닥 원형 영역 내 랜덤 위치 (XY 평면)
+            theta = self.rng.uniform(0, 2 * np.pi)
+            r = bottom_radius * np.sqrt(self.rng.uniform(0, 1))  # 균등 분포
 
-            # 구면좌표 → 직교좌표
-            x = cx + r * np.sin(phi) * np.cos(theta)
-            y = cy + r * np.sin(phi) * np.sin(theta)
-            z = cz + r * np.cos(phi)
+            x = cx + r * np.cos(theta)
+            y = cy + r * np.sin(theta)
+
+            # Z 좌표: 바닥부터 몇 층으로 쌓임 (최대 5-6층)
+            layer = idx // 9  # 한 층에 약 9개씩
+            z = bottom_center_z + layer * self.ball_radius * 2.1
 
             # 다른 공들과 겹치지 않는지 확인
             min_dist = self.ball_radius * 2.2  # 최소 거리 (약간의 여유)
@@ -303,12 +307,12 @@ class LottoChamber3D_Ultimate:
                 ball = Ball3D(
                     number=idx + 1,
                     x=x, y=y, z=z,
-                    vx=self.rng.uniform(-100, 100),
-                    vy=self.rng.uniform(-100, 100),
-                    vz=self.rng.uniform(0, 200),
-                    wx=self.rng.uniform(-10, 10),
-                    wy=self.rng.uniform(-10, 10),
-                    wz=self.rng.uniform(-10, 10)
+                    vx=0.0,  # 정지 상태에서 시작 (바닥에 안착)
+                    vy=0.0,
+                    vz=0.0,
+                    wx=0.0,
+                    wy=0.0,
+                    wz=0.0
                 )
 
                 self.balls.append(ball)
@@ -428,6 +432,27 @@ class LottoChamber3D_Ultimate:
         ball.wx *= (1 - angular_drag * dt)
         ball.wy *= (1 - angular_drag * dt)
         ball.wz *= (1 - angular_drag * dt)
+
+        # ========== 안전장치: 속도 제한 및 NaN/Inf 체크 ==========
+        # 최대 속도 제한 (현실적인 값: ~10 m/s = 10000 mm/s)
+        MAX_SPEED = 10000.0  # mm/s
+        speed = ball.speed
+        if speed > MAX_SPEED:
+            scale = MAX_SPEED / speed
+            ball.vx *= scale
+            ball.vy *= scale
+            ball.vz *= scale
+
+        # NaN/Inf 체크 및 수정
+        if not (np.isfinite(ball.vx) and np.isfinite(ball.vy) and np.isfinite(ball.vz)):
+            ball.vx = 0.0
+            ball.vy = 0.0
+            ball.vz = 0.0
+
+        if not (np.isfinite(ball.wx) and np.isfinite(ball.wy) and np.isfinite(ball.wz)):
+            ball.wx = 0.0
+            ball.wy = 0.0
+            ball.wz = 0.0
 
     def _apply_blower_force(self, ball: Ball3D, dt: float, batch_idx: int = -1):
         """Blower Jet 힘 적용 (각 jet별로)"""
