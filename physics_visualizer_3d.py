@@ -829,20 +829,22 @@ class PhysicsVisualizer3D:
         grid_size = 800  # 800mm x 800mm
         grid_step = 50   # 50mm 간격
 
-        # Z = -260 (챔버 바닥)에 그리드 그리기
-        z_floor = -260
+        # Z = 0 (챔버 바닥, 절대 좌표)에 그리드 그리기
+        # 챔버 중심 = (250, 250, 250), 반지름 = 250mm
+        # 따라서 챔버 바닥 = 250 - 250 = 0
+        z_floor = 0
 
         glBegin(GL_LINES)
 
-        # X축 방향 선들
+        # X축 방향 선들 (챔버 중심 250을 기준으로)
         for y in range(-grid_size // 2, grid_size // 2 + grid_step, grid_step):
-            glVertex3f(-grid_size // 2, y, z_floor)
-            glVertex3f(grid_size // 2, y, z_floor)
+            glVertex3f(250 + (-grid_size // 2), 250 + y, z_floor)
+            glVertex3f(250 + (grid_size // 2), 250 + y, z_floor)
 
         # Y축 방향 선들
         for x in range(-grid_size // 2, grid_size // 2 + grid_step, grid_step):
-            glVertex3f(x, -grid_size // 2, z_floor)
-            glVertex3f(x, grid_size // 2, z_floor)
+            glVertex3f(250 + x, 250 + (-grid_size // 2), z_floor)
+            glVertex3f(250 + x, 250 + (grid_size // 2), z_floor)
 
         glEnd()
         glEnable(GL_LIGHTING)
