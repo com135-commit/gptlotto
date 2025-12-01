@@ -153,8 +153,8 @@ class PhysicsVisualizer3D:
         self.paused = True  # 시작 시 일시정지 상태 (SPACE로 시작)
 
         # 물리 엔진 (LottoChamber3D_Ultimate 사용 - 67가지 물리 현상)
-        # 매번 다른 결과를 위해 seed=None (랜덤 시드)
-        self.engine = LottoChamber3D_Ultimate(seed=None)
+        # 매번 다른 결과 생성 (랜덤 시드는 내부에서 자동 생성)
+        self.engine = LottoChamber3D_Ultimate()
         # initialize_balls()는 LottoChamber3D_Ultimate.__init__에서 자동 호출됨
 
         # 카메라 설정 (정면에서 약간 위에서 내려다보기)
