@@ -187,7 +187,7 @@ class PhysicsVisualizer3D:
         # 폰트 초기화는 init_display에서
 
         # 공기력 저장 (추첨 완료 후 복구용)
-        self.original_jet_force = self.engine.jet_acceleration
+        self.original_jet_force = self.engine.jet_force
         self.original_chamber_radius = self.engine.effective_chamber_radius
 
         # 풍압 조절 설정
@@ -980,7 +980,7 @@ class PhysicsVisualizer3D:
         # 추첨 단계 정보 (실시간 디버그)
         phase_text = f"단계: {self.engine.phase}"
         jet_power_text = f"풍량: {self.engine.jet_power*100:.0f}%"
-        jet_force_text = f"풍압: {self.jet_force_multiplier*100:.0f}% ({self.engine.jet_acceleration:.0f} mm/s²)"
+        jet_force_text = f"풍압: {self.jet_force_multiplier*100:.0f}% ({self.engine.jet_force:.0f} mm/s²)"
         active_count = sum(1 for b in self.engine.balls if b.active)
         balls_text = f"챔버 내 공: {active_count}개"
 
@@ -1121,7 +1121,7 @@ class PhysicsVisualizer3D:
                     self.physics_thread.paused = False
                     self.physics_thread.simulation_time = 0.0  # 물리 스레드 시간도 리셋
                     # 공기력 복구 (현재 배율 적용)
-                    self.engine.jet_acceleration = self.original_jet_force * self.jet_force_multiplier
+                    self.engine.jet_force = self.original_jet_force * self.jet_force_multiplier
                     # 난류 복구 (추첨 완료 시 0으로 설정되었을 수 있음)
                     self.engine.turbulence = 9000.0
                     # phase도 초기화
@@ -1134,14 +1134,14 @@ class PhysicsVisualizer3D:
                 elif event.key == pygame.K_UP:
                     # 풍압 증가 (최대 200%)
                     self.jet_force_multiplier = min(2.0, self.jet_force_multiplier + self.jet_force_step)
-                    self.engine.jet_acceleration = self.original_jet_force * self.jet_force_multiplier
-                    print(f"풍압: {self.jet_force_multiplier*100:.0f}% ({self.engine.jet_acceleration:.1f} mm/s²)")
+                    self.engine.jet_force = self.original_jet_force * self.jet_force_multiplier
+                    print(f"풍압: {self.jet_force_multiplier*100:.0f}% ({self.engine.jet_force:.1f} mm/s²)")
 
                 elif event.key == pygame.K_DOWN:
                     # 풍압 감소 (최소 50%)
                     self.jet_force_multiplier = max(0.5, self.jet_force_multiplier - self.jet_force_step)
-                    self.engine.jet_acceleration = self.original_jet_force * self.jet_force_multiplier
-                    print(f"풍압: {self.jet_force_multiplier*100:.0f}% ({self.engine.jet_acceleration:.1f} mm/s²)")
+                    self.engine.jet_force = self.original_jet_force * self.jet_force_multiplier
+                    print(f"풍압: {self.jet_force_multiplier*100:.0f}% ({self.engine.jet_force:.1f} mm/s²)")
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # 왼쪽 버튼
