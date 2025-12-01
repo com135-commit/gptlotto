@@ -168,10 +168,13 @@ class LottoChamber3D_Ultimate:
     61-67: 고급 효과 (음향, 난류 와류, 벽면 효과)
     """
 
-    # 챔버 크기 (mm) - 실제 로또 기계 크기 참고
-    width: float = 400.0  # X 방향
-    depth: float = 400.0  # Y 방향
-    height: float = 600.0  # Z 방향
+    # 챔버 크기 (mm) - 표준 로또 추첨기 실측치 기반
+    # 참고: 일반적인 중형 에어믹스 추첨기 (BS1 모델 등)
+    # 전체: 높이 1820mm × 너비 700mm × 깊이 610mm
+    # 믹싱 챔버는 전체 크기의 약 50-60% 정도로 추정
+    width: float = 350.0  # X 방향 (약 700mm 내부의 50%)
+    depth: float = 305.0  # Y 방향 (약 610mm 내부의 50%)
+    height: float = 900.0  # Z 방향 (약 1820mm 내부의 50%)
 
     # 공 설정
     num_balls: int = 45
