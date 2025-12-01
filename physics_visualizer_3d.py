@@ -1110,8 +1110,7 @@ class PhysicsVisualizer3D:
                     import numpy as np
                     self.engine.rng = np.random.default_rng()
 
-                    self.engine.initialize_balls()
-                    self.engine.selected = []  # 출구 통과 리스트도 초기화
+                    self.engine._initialize_balls()
                     self.engine.extracted_balls = []  # 추출된 공 리스트도 초기화
                     self.selected_balls = []
                     self.simulation_time = 0.0
