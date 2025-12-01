@@ -188,10 +188,13 @@ class LottoChamber3D_Ultimate:
     restitution: float = RESTITUTION
     friction: float = FRICTION_COEF
 
-    # 유체 역학 파라미터 (현실적 값으로 수정)
-    jet_force: float = 12000.0  # mm/s² (10-15 m/s² = 현실적)
-    vacuum_force: float = 2000.0  # mm/s²
-    turbulence: float = 1500.0  # mm/s² (1-2 m/s² = 현실적)
+    # 유체 역학 파라미터 (실제 로또 기계 데이터 기반)
+    # NBA 로또: 90 mph (40 m/s) 공기 속도, 400 CFM 유량
+    # 한국 비너스: "태풍급" 풍속
+    # 공을 40 m/s로 가속하려면: a = v²/(2·d) ≈ 1600/(2·0.25) = 3200 m/s²
+    jet_force: float = 3200000.0  # mm/s² = 3200 m/s² (태풍급 가속)
+    vacuum_force: float = 50000.0  # mm/s² = 50 m/s² (추출력)
+    turbulence: float = 80000.0  # mm/s² = 80 m/s² (난류 효과)
 
     # Blower 설정
     num_jets: int = 4
@@ -441,9 +444,10 @@ class LottoChamber3D_Ultimate:
         ball.wz *= (1 - angular_drag * dt)
 
         # ========== 안전장치: 속도 제한 및 NaN/Inf 체크 ==========
-        # 최대 속도 제한 (현실적인 값: ~30 m/s = 30000 mm/s)
-        # 로또 공은 강한 공기 제트로 인해 빠르게 움직일 수 있음
-        MAX_SPEED = 30000.0  # mm/s (30 m/s)
+        # 최대 속도 제한 (실제 로또 기계 데이터)
+        # NBA 로또 기계: 90 mph = 40.2 m/s 공기 속도
+        # 공이 공기 속도를 초과할 수 없음 (항력이 무한대가 됨)
+        MAX_SPEED = 45000.0  # mm/s (45 m/s, 약간 여유)
         speed = ball.speed
         if speed > MAX_SPEED:
             scale = MAX_SPEED / speed
