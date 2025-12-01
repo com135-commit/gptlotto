@@ -772,7 +772,7 @@ class PhysicsVisualizer3D:
         # === 렌더링 1: 먼저 공 색상만 그리기 ===
         quadric = gluNewQuadric()
         gluQuadricNormals(quadric, GLU_SMOOTH)
-        gluSphere(quadric, 22.25, 32, 32)
+        gluSphere(quadric, 22.25, 16, 16)  # 32→16 (4배 성능 향상)
         gluDeleteQuadric(quadric)
 
         # === 렌더링 2: 텍스처(숫자) 위에 덧그리기 ===
@@ -803,7 +803,7 @@ class PhysicsVisualizer3D:
             quadric2 = gluNewQuadric()
             gluQuadricNormals(quadric2, GLU_SMOOTH)
             gluQuadricTexture(quadric2, GL_TRUE)
-            gluSphere(quadric2, 22.26, 32, 32)  # 아주 약간 크게
+            gluSphere(quadric2, 22.26, 16, 16)  # 32→16 (4배 성능 향상)
             gluDeleteQuadric(quadric2)
 
             glDisable(GL_POLYGON_OFFSET_FILL)
@@ -1217,7 +1217,7 @@ class PhysicsVisualizer3D:
             # === 렌더링 1: 먼저 공 색상만 그리기 ===
             quadric = gluNewQuadric()
             gluQuadricNormals(quadric, GLU_SMOOTH)
-            gluSphere(quadric, 25, 32, 32)
+            gluSphere(quadric, 25, 16, 16)  # 32→16 (성능 최적화)
             gluDeleteQuadric(quadric)
 
             # === 렌더링 2: 텍스처(숫자) 위에 덧그리기 ===
@@ -1241,7 +1241,7 @@ class PhysicsVisualizer3D:
                 quadric2 = gluNewQuadric()
                 gluQuadricNormals(quadric2, GLU_SMOOTH)
                 gluQuadricTexture(quadric2, GL_TRUE)
-                gluSphere(quadric2, 25.02, 32, 32)
+                gluSphere(quadric2, 25.02, 16, 16)  # 32→16 (성능 최적화)
                 gluDeleteQuadric(quadric2)
 
                 glDisable(GL_POLYGON_OFFSET_FILL)
