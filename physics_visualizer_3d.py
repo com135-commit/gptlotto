@@ -188,7 +188,6 @@ class PhysicsVisualizer3D:
 
         # 공기력 저장 (추첨 완료 후 복구용)
         self.original_jet_force = self.engine.jet_force
-        self.original_chamber_radius = self.engine.effective_chamber_radius
 
         # 풍압 조절 설정
         self.jet_force_multiplier = 1.0  # 풍압 배율 (0.5 ~ 2.0)
