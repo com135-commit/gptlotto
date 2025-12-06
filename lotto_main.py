@@ -7,6 +7,10 @@ Lotto 6/45 Simulator (KR) — Genius + Quantum + HM + MQLE + AI + Rigged Sim + 3
 
 from __future__ import annotations
 
+# GPU 비활성화 (CPU만 사용)
+import os
+os.environ['NUMBA_DISABLE_CUDA'] = '1'
+
 # 표준 라이브러리
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -54,21 +58,13 @@ from lotto_simulation import (
     build_synthetic_player_pool,
     estimate_expected_winners_from_pool,
     _rigged_candidate_chunk,
-    _rigged_candidate_gpu,
 )
 from lotto_physics import (
     get_physics_backend_info,
-    HAS_CUPY,
 )
 
 
 _rng = get_rng()
-
-# GPU 지원 확인
-try:
-    import cupy as cp
-except Exception:
-    cp = None
 
 class LottoApp(tk.Tk):
     def __init__(self):
@@ -93,13 +89,14 @@ class LottoApp(tk.Tk):
         self.rig_target_min = tk.IntVar(value=8)
         self.rig_target_max = tk.IntVar(value=15)
         self.rig_samples = tk.IntVar(value=20000)
-        # ★ GPU 사용 여부
-        self.rig_use_gpu = tk.BooleanVar(value=False)
         # ★ 가상 플레이어 수 (사용자 지정, 기본 400,000명)
         self.rig_virtual_players = tk.IntVar(value=400000)
         # ★ 가상 조작 시뮬 결과 저장용
         self.rig_results: list[tuple[list[int], float]] = []
         self.rig_last_params: dict = {}
+        # ★ 가상 조작 시뮬 진행률 표시 위젯
+        self.rig_progressbar = None
+        self.rig_progress_label = None
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
@@ -323,6 +320,19 @@ class LottoApp(tk.Tk):
         )
         self.scale_qc.grid(row=3, column=0, columnspan=6, sticky="we", pady=(8, 0))
 
+        # ML 가중치 슬라이더 추가
+        self.ml_weight = tk.IntVar(value=30)
+        self.scale_ml = tk.Scale(
+            frm,
+            from_=0,
+            to=100,
+            orient="horizontal",
+            label="ML 가중치(%) — MQLE 전용 (CSV 필요)",
+            variable=self.ml_weight,
+            length=360,
+        )
+        self.scale_ml.grid(row=4, column=0, columnspan=6, sticky="we", pady=(8, 0))
+
         btns = ttk.Frame(top)
         btns.pack(fill=tk.X, padx=10, pady=8)
         ttk.Button(btns, text="번호 생성", command=self._gen_dispatch).pack(
@@ -514,6 +524,15 @@ class LottoApp(tk.Tk):
                     exclude_set=excl_set or None,
                 )
             elif mode == "MQLE(끝판왕)":
+                # MQLE 모드는 CSV 필수 (히스토리 전략은 선택)
+                if self.history_df is None:
+                    messagebox.showwarning(
+                        "CSV 파일 필요",
+                        "MQLE 모드는 CSV 데이터가 필요합니다.\n"
+                        "상단 메뉴에서 CSV 파일을 먼저 불러오세요."
+                    )
+                    return
+
                 base_sets = None
                 txt = self.text_sets.get("1.0", tk.END)
                 if txt.strip():
@@ -522,6 +541,7 @@ class LottoApp(tk.Tk):
                     except Exception:
                         base_sets = None
                 q_bal = self.qc_balance.get() / 100.0
+                ml_w = self.ml_weight.get() / 100.0
                 arr = gen_MQLE(
                     n,
                     history_df=self.history_df,
@@ -530,6 +550,7 @@ class LottoApp(tk.Tk):
                     base_sets=base_sets,
                     q_balance=q_bal,
                     ml_model=self.ml_model,
+                    ml_weight=ml_w,
                 )
             elif mode in ("물리시뮬3D", "물리시뮬3D+MQLE(끝판왕)"):
                 # 물리시뮬은 백그라운드 스레드에서 실행 (GUI 멈춤 방지)
@@ -546,6 +567,16 @@ class LottoApp(tk.Tk):
 
     def _run_physics_in_background(self, mode: str, n: int, weights):
         """3D 물리시뮬을 백그라운드 스레드에서 실행"""
+        # MQLE 모드는 CSV 필수 (히스토리 전략은 선택)
+        if mode == "물리시뮬3D+MQLE(끝판왕)":
+            if self.history_df is None:
+                messagebox.showwarning(
+                    "CSV 파일 필요",
+                    "물리시뮬3D+MQLE 모드는 CSV 데이터가 필요합니다.\n"
+                    "상단 메뉴에서 CSV 파일을 먼저 불러오세요."
+                )
+                return
+
         if "MQLE" in mode:
             backend = "3D CFD + MQLE 융합"
         else:
@@ -576,14 +607,18 @@ class LottoApp(tk.Tk):
 
                 elif mode == "물리시뮬3D+MQLE(끝판왕)":
                     # 3D 구형챔버 + PMMA 물리 + MQLE 융합 (최종 끝판왕)
+                    ml_w = self.ml_weight.get() / 100.0
                     arr = generate_physics_3d_ultimate(
                         n_sets=n,
                         seed=int(rng.integers(0, 2**31)),
                         grid_size=32,  # 64 -> 32 (약 20배 빠름)
+                        history_df=self.history_df,  # CSV 데이터 전달
                         history_weights=weights,
                         mqle_threshold=0.5,
                         max_attempts=30,
                         fast_mode=True,  # 빠른 모드 활성화
+                        ml_model=self.ml_model,  # ML 모델 전달
+                        ml_weight=ml_w,  # ML 가중치 전달
                     )
 
                 arr = arr[:n]
@@ -645,10 +680,49 @@ class LottoApp(tk.Tk):
             )
             return
 
+        # MQLE 모드에서는 시각화 의미 없음 (경고만)
+        if "MQLE" in mode:
+            messagebox.showwarning(
+                "시각화 비추천",
+                "⚠️ 물리시뮬3D+MQLE 모드는 내부적으로 수십~수백 번의\n"
+                "빠른 시뮬레이션(비시각화)을 실행한 후 최적 결과만 선택합니다.\n\n"
+                "시각화로 보는 1회 시뮬레이션은 실제 생성 과정과 무관하며,\n"
+                "1회당 약 50초가 소요됩니다.\n\n"
+                "💡 순수 물리 시뮬레이션 시각화를 원하시면\n"
+                "'물리시뮬3D' 단독 모드를 사용하세요."
+            )
+            return
+
+        # 로딩 알림
+        messagebox.showinfo(
+            "3D 시각화 시작",
+            "시각화 창이 열립니다.\n\n"
+            "첫 실행 시 초기화에 1-2초 소요됩니다.\n"
+            "(Numba JIT 컴파일, OpenGL 초기화)"
+        )
+
         # 별도 스레드에서 시각화 실행
         def run_visualizer():
             try:
+                # ★ 모듈 강제 리로드 (수정사항 즉시 반영 - VS Code 포함)
+                import sys
+
+                # 캐시된 .pyc 파일 무시
+                sys.dont_write_bytecode = True
+
+                # 관련 모듈 완전히 제거 후 재import
+                modules_to_remove = []
+                for mod_name in list(sys.modules.keys()):
+                    if 'lotto_physics' in mod_name or 'physics_visualizer' in mod_name:
+                        modules_to_remove.append(mod_name)
+
+                for mod_name in modules_to_remove:
+                    del sys.modules[mod_name]
+                    print(f"[리로드] {mod_name} 모듈 제거 후 재로드")
+
+                # 새로 import
                 from physics_visualizer_3d import launch_visualizer
+
                 launch_visualizer(num_balls=45, mode=mode)
             except ImportError as e:
                 messagebox.showerror(
@@ -659,7 +733,8 @@ class LottoApp(tk.Tk):
             except Exception as e:
                 messagebox.showerror("시각화 오류", f"3D 시각화 실행 중 오류:\n{e}")
 
-        thread = threading.Thread(target=run_visualizer, daemon=True)
+        # daemon=False: 시각화 창을 독립적으로 닫을 수 있도록
+        thread = threading.Thread(target=run_visualizer, daemon=False)
         thread.start()
         # 조작법은 3D 시각화 화면에 표시됨
 
@@ -881,17 +956,15 @@ class LottoApp(tk.Tk):
         )
         ttk.Label(top, text="(예: 400000)").grid(row=2, column=2, sticky="w")
 
-        # ★ GPU 사용 옵션
-        chk = ttk.Checkbutton(
-            top,
-            text="GPU 사용 (CuPy, 실험적)",
-            variable=self.rig_use_gpu,
-        )
-        chk.grid(row=3, column=0, columnspan=4, sticky="w", pady=(4, 2))
+        # 진행률 표시 (Progressbar + Label)
+        progress_frame = ttk.Frame(win)
+        progress_frame.pack(fill=tk.X, padx=10, pady=4)
 
-        if cp is None:
-            chk.state(["disabled"])
-            chk.config(text="GPU 사용 (CuPy 미설치)")
+        self.rig_progressbar = ttk.Progressbar(progress_frame, mode="determinate", length=400)
+        self.rig_progressbar.pack(fill=tk.X, pady=(0, 2))
+
+        self.rig_progress_label = ttk.Label(progress_frame, text="")
+        self.rig_progress_label.pack(anchor="w")
 
         # 상태 라벨 + 엑셀 저장 버튼을 한 줄에
         status_frame = ttk.Frame(win)
@@ -1054,6 +1127,13 @@ class LottoApp(tk.Tk):
                 text=f"가상 플레이어 풀 구성 + 검색 중... (샘플 {samples:,}개, 가상 플레이어 {sim_players_val:,}명)"
             )
 
+        # 진행률 초기화
+        if self.rig_progressbar is not None:
+            self.rig_progressbar["value"] = 0
+            self.rig_progressbar["maximum"] = 100
+        if self.rig_progress_label is not None:
+            self.rig_progress_label.config(text="준비 중...")
+
         def task():
             # 세트 편집 탭에서 사용자 세트 읽기 (취향 반영용)
             user_sets = None
@@ -1084,12 +1164,18 @@ class LottoApp(tk.Tk):
             # 2) 가상 플레이어 수: 사용자가 지정한 값 그대로 사용
             sim_players = sim_players_val
 
+            # 진행률 업데이트: 플레이어 풀 생성 시작
+            self.after(0, lambda: self._update_rig_progress(10, "가상 플레이어 풀 생성 중..."))
+
             # 3) 가상 플레이어 풀 생성 (전구간 36코어 사용)
             ticket_pool = build_synthetic_player_pool(
                 sim_players,
                 local_w,
                 workers=36,   # 36 프로세스 풀
             )
+
+            # 진행률 업데이트: 플레이어 풀 생성 완료
+            self.after(0, lambda: self._update_rig_progress(30, "후보 번호 샘플링 중..."))
 
             # 4) 실제 전국 판매량 계산 (구매자수 × 평균게임수)
             buyers = int(self.rig_buyers.get())
@@ -1098,60 +1184,44 @@ class LottoApp(tk.Tk):
 
             scale_factor = REAL_TICKETS / float(sim_players)
 
-            # 5) GPU 사용 여부 결정
-            use_gpu = bool(self.rig_use_gpu.get() and cp is not None)
-
+            # CPU 멀티프로세스 경로
             xs: list[tuple[list[int], float]] = []
+            max_workers = 36
+            per_worker = samples // max_workers
+            remainder = samples % max_workers
 
-            if use_gpu:
-                # GPU 경로 (벡터화)
-                try:
-                    xs = _rigged_candidate_gpu(
-                        samples,
-                        local_w,
-                        ticket_pool,
-                        scale_factor,
-                        tmin,
-                        tmax,
+            with ProcessPoolExecutor(max_workers=max_workers) as ex:
+                futures = []
+                for i in range(max_workers):
+                    n_i = per_worker + (1 if i < remainder else 0)
+                    if n_i <= 0:
+                        continue
+                    futures.append(
+                        ex.submit(
+                            _rigged_candidate_chunk,
+                            n_i,
+                            local_w,
+                            ticket_pool,
+                            scale_factor,
+                            tmin,
+                            tmax,
+                        )
                     )
-                except Exception as e:
-                    use_gpu = False
-                    xs = []
-                    if self.rig_status_label is not None:
-                        self.after(
-                            0,
-                            lambda err=e: self.rig_status_label.config(
-                                text=f"GPU 경로 실패, CPU로 폴백: {err}"
-                            ),
-                        )
 
-            if not use_gpu:
-                # 기존 CPU 멀티프로세스 경로
-                max_workers = 36
-                per_worker = samples // max_workers
-                remainder = samples % max_workers
+                # 진행률 업데이트: 워커들 완료 추적
+                total_futures = len(futures)
+                completed_futures = 0
+                for fut in as_completed(futures):
+                    part = fut.result()
+                    if part:
+                        xs.extend(part)
+                    completed_futures += 1
+                    progress_percent = 30 + int((completed_futures / total_futures) * 60)
+                    self.after(0, lambda p=progress_percent, c=completed_futures, t=total_futures:
+                              self._update_rig_progress(p, f"샘플링 진행 중... ({c}/{t} 워커 완료)"))
 
-                with ProcessPoolExecutor(max_workers=max_workers) as ex:
-                    futures = []
-                    for i in range(max_workers):
-                        n_i = per_worker + (1 if i < remainder else 0)
-                        if n_i <= 0:
-                            continue
-                        futures.append(
-                            ex.submit(
-                                _rigged_candidate_chunk,
-                                n_i,
-                                local_w,
-                                ticket_pool,
-                                scale_factor,
-                                tmin,
-                                tmax,
-                            )
-                        )
-                    for fut in as_completed(futures):
-                        part = fut.result()
-                        if part:
-                            xs.extend(part)
+            # 진행률 업데이트: 정렬 및 필터링 시작
+            self.after(0, lambda: self._update_rig_progress(90, "결과 정렬 및 필터링 중..."))
 
             # 후보 정렬 및 상위 200개 선택
             if not xs:
@@ -1161,11 +1231,21 @@ class LottoApp(tk.Tk):
                 xs_sorted = sorted(xs, key=lambda d: abs(d[1] - center))
                 rows = xs_sorted[:200]
 
-            self.after(0, lambda r=rows, t1=tmin, t2=tmax, s=samples, sp=sim_players, b=buyers, ag=avg_games, ug=use_gpu: self._update_rigged_tree(
-                r, t1, t2, s, sp, b, ag, ug
+            # 진행률 업데이트: 완료
+            self.after(0, lambda: self._update_rig_progress(100, "완료"))
+
+            self.after(0, lambda r=rows, t1=tmin, t2=tmax, s=samples, sp=sim_players, b=buyers, ag=avg_games: self._update_rigged_tree(
+                r, t1, t2, s, sp, b, ag
             ))
 
         threading.Thread(target=task, daemon=True).start()
+
+    def _update_rig_progress(self, percent: float, message: str):
+        """가상 조작 시뮬 진행률 업데이트"""
+        if self.rig_progressbar is not None:
+            self.rig_progressbar["value"] = percent
+        if self.rig_progress_label is not None:
+            self.rig_progress_label.config(text=message)
 
     def _update_rigged_tree(
         self,
@@ -1176,7 +1256,6 @@ class LottoApp(tk.Tk):
         sim_players: int,
         buyers: int = 14000000,
         avg_games: float = 8.0,
-        use_gpu: bool = False,
     ):
         # ★ 결과 저장 (엑셀 저장용)
         self.rig_results = rows
@@ -1187,7 +1266,6 @@ class LottoApp(tk.Tk):
             "sim_players": sim_players,
             "buyers": buyers,
             "avg_games": avg_games,
-            "use_gpu": use_gpu,
         }
 
         if self.rig_tree is None:

@@ -964,6 +964,7 @@ def gen_MQLE(
     base_sets: list[list[int]] | None = None,
     q_balance: float = 0.6,
     ml_model: dict | None = None,
+    ml_weight: float = 0.3,
 ):
     q_balance = float(max(0.0, min(1.0, q_balance)))
     result: list[list[int]] = []
@@ -1048,12 +1049,15 @@ def gen_MQLE(
 
     pref_strength = 0.4
 
+    # ML 가중치 정규화 (0.0 ~ 1.0 범위)
+    ml_weight = float(max(0.0, min(1.0, ml_weight)))
+
     for k in range(n_sets):
         t_ratio = k / max(1, n_sets - 1)
         alpha_qh = 0.5 + 0.4 * (1.0 - t_ratio)
         alpha_div = 0.3 + 0.4 * t_ratio
         alpha_rand = 0.2
-        alpha_ml = 0.3
+        alpha_ml = ml_weight
 
         cand_list = candidate_from_modes()
         best_cand = None
