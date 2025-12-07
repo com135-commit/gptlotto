@@ -296,6 +296,11 @@ class LottoApp(tk.Tk):
         self.ml_model_type.trace_add("write", update_model_desc)
         update_model_desc()
 
+        # ML 학습 시작 버튼
+        ttk.Button(hist, text="🎓 ML 학습 시작", command=self._train_ml_model).grid(
+            row=4, column=0, columnspan=3, padx=6, pady=(8, 6), sticky="ew"
+        )
+
         frm = ttk.LabelFrame(top, text="번호 추출기")
         frm.pack(fill=tk.X, padx=10, pady=10)
 
@@ -431,9 +436,25 @@ class LottoApp(tk.Tk):
             text=f"로드됨: {os.path.basename(path)} ({len(df)}회)"
         )
 
+        # ML 모델 초기화 (수동 학습 필요)
         self.ml_model = None
-        self.lbl_ai.config(text="AI 세트 평점: 학습 중...")
+        self.lbl_ai.config(text="AI 세트 평점: 학습 전 (🎓 ML 학습 시작 버튼 클릭)")
 
+    def _train_ml_model(self):
+        """ML 모델 학습 (별도 버튼)"""
+        # CSV 로드 확인
+        if self.history_df is None or self.history_df.empty:
+            messagebox.showwarning(
+                "CSV 필요",
+                "먼저 'CSV 불러오기' 버튼으로 과거 당첨 데이터를 로드하세요."
+            )
+            return
+
+        # 학습 시작 표시
+        self.lbl_ai.config(text="AI 세트 평점: 학습 중...")
+        self.page_generate.update()  # UI 즉시 업데이트
+
+        # 가중치 계산 (Balanced 전략 사용)
         try:
             w_bal, _ = compute_weights(
                 self.history_df,
@@ -444,11 +465,11 @@ class LottoApp(tk.Tk):
         except Exception:
             w_bal = None
 
-        # ★ AI 학습 회차 수 읽기
+        # 학습 회차 수 읽기
         max_rounds_str = self.ai_max_rounds.get().strip()
         try:
             if max_rounds_str == "":
-                max_rounds = None   # 전체 사용
+                max_rounds = None  # 전체 사용
             else:
                 max_rounds = int(max_rounds_str)
         except ValueError:
@@ -457,6 +478,7 @@ class LottoApp(tk.Tk):
         if max_rounds is not None and max_rounds <= 0:
             max_rounds = None
 
+        # ML 학습 실행
         try:
             model_type = self.ml_model_type.get()
             self.ml_model = train_ml_scorer(
@@ -467,24 +489,37 @@ class LottoApp(tk.Tk):
             )
         except Exception as e:
             self.ml_model = None
-            self.lbl_ai.config(text="AI 세트 평점: 학습 실패(기본 MQLE만 동작)")
-            messagebox.showwarning(
-                "AI 학습 경고",
-                f"세트 평점 AI 학습 실패: {e}",
+            self.lbl_ai.config(text="AI 세트 평점: 학습 실패 (기본 MQLE만 동작)")
+            messagebox.showerror(
+                "AI 학습 실패",
+                f"ML 모델 학습 중 오류 발생:\n{e}"
             )
+            import traceback
+            traceback.print_exc()
         else:
+            # 학습 성공
             if max_rounds is None:
                 used_rounds = len(self.history_df)
             else:
                 used_rounds = min(len(self.history_df), max_rounds)
+
             model_name = {
                 "logistic": "로지스틱",
                 "random_forest": "랜덤포레스트",
                 "gradient_boosting": "그래디언트부스팅",
                 "neural_network": "신경망",
             }.get(self.ml_model_type.get(), "ML")
+
             self.lbl_ai.config(
                 text=f"AI 세트 평점: {model_name} 학습 완료 ({used_rounds}회)"
+            )
+
+            messagebox.showinfo(
+                "학습 완료",
+                f"✅ {model_name} 모델 학습 완료!\n"
+                f"   - 학습 회차: {used_rounds}회\n"
+                f"   - 정확도: {self.ml_model.get('accuracy', 0):.2%}\n\n"
+                f"이제 MQLE 모드에서 ML 점수가 반영됩니다."
             )
 
     def _prepare_history_weights(self):
