@@ -441,7 +441,7 @@ class LottoApp(tk.Tk):
         self.lbl_ai.config(text="AI 세트 평점: 학습 전 (🎓 ML 학습 시작 버튼 클릭)")
 
     def _train_ml_model(self):
-        """ML 모델 학습 (별도 버튼)"""
+        """ML 모델 학습 (별도 스레드에서 실행)"""
         # CSV 로드 확인
         if self.history_df is None or self.history_df.empty:
             messagebox.showwarning(
@@ -451,9 +451,14 @@ class LottoApp(tk.Tk):
             return
 
         # 학습 시작 표시
-        self.lbl_ai.config(text="AI 세트 평점: 학습 중...")
+        self.lbl_ai.config(text="AI 세트 평점: 학습 중... (잠시만 기다려주세요)")
         self.page_generate.update()  # UI 즉시 업데이트
 
+        # 별도 스레드에서 학습 실행
+        threading.Thread(target=self._train_ml_model_worker, daemon=True).start()
+
+    def _train_ml_model_worker(self):
+        """ML 학습 작업 (백그라운드 스레드)"""
         # 가중치 계산 (Balanced 전략 사용)
         try:
             w_bal, _ = compute_weights(
@@ -481,23 +486,14 @@ class LottoApp(tk.Tk):
         # ML 학습 실행
         try:
             model_type = self.ml_model_type.get()
-            self.ml_model = train_ml_scorer(
+            trained_model = train_ml_scorer(
                 self.history_df,
                 weights=w_bal,
                 max_rounds=max_rounds,
                 model_type=model_type,
             )
-        except Exception as e:
-            self.ml_model = None
-            self.lbl_ai.config(text="AI 세트 평점: 학습 실패 (기본 MQLE만 동작)")
-            messagebox.showerror(
-                "AI 학습 실패",
-                f"ML 모델 학습 중 오류 발생:\n{e}"
-            )
-            import traceback
-            traceback.print_exc()
-        else:
-            # 학습 성공
+
+            # 학습 성공 - 메인 스레드에서 UI 업데이트
             if max_rounds is None:
                 used_rounds = len(self.history_df)
             else:
@@ -508,19 +504,41 @@ class LottoApp(tk.Tk):
                 "random_forest": "랜덤포레스트",
                 "gradient_boosting": "그래디언트부스팅",
                 "neural_network": "신경망",
-            }.get(self.ml_model_type.get(), "ML")
+            }.get(model_type, "ML")
 
-            self.lbl_ai.config(
-                text=f"AI 세트 평점: {model_name} 학습 완료 ({used_rounds}회)"
-            )
+            # 메인 스레드에서 UI 업데이트
+            self.root.after(0, lambda: self._on_ml_training_success(
+                trained_model, model_name, used_rounds
+            ))
 
-            messagebox.showinfo(
-                "학습 완료",
-                f"✅ {model_name} 모델 학습 완료!\n"
-                f"   - 학습 회차: {used_rounds}회\n"
-                f"   - 정확도: {self.ml_model.get('accuracy', 0):.2%}\n\n"
-                f"이제 MQLE 모드에서 ML 점수가 반영됩니다."
-            )
+        except Exception as e:
+            # 학습 실패 - 메인 스레드에서 UI 업데이트
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda: self._on_ml_training_failure(str(e)))
+
+    def _on_ml_training_success(self, model, model_name, used_rounds):
+        """ML 학습 성공 시 UI 업데이트 (메인 스레드)"""
+        self.ml_model = model
+        self.lbl_ai.config(
+            text=f"AI 세트 평점: {model_name} 학습 완료 ({used_rounds}회)"
+        )
+        messagebox.showinfo(
+            "학습 완료",
+            f"✅ {model_name} 모델 학습 완료!\n"
+            f"   - 학습 회차: {used_rounds}회\n"
+            f"   - 정확도: {model.get('accuracy', 0):.2%}\n\n"
+            f"이제 MQLE 모드에서 ML 점수가 반영됩니다."
+        )
+
+    def _on_ml_training_failure(self, error_msg):
+        """ML 학습 실패 시 UI 업데이트 (메인 스레드)"""
+        self.ml_model = None
+        self.lbl_ai.config(text="AI 세트 평점: 학습 실패 (기본 MQLE만 동작)")
+        messagebox.showerror(
+            "AI 학습 실패",
+            f"ML 모델 학습 중 오류 발생:\n{error_msg}"
+        )
 
     def _prepare_history_weights(self):
         strat = self.hist_strategy.get()
