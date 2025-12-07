@@ -526,13 +526,8 @@ class LottoApp(tk.Tk):
             text=f"AI 세트 평점: {model_name} 학습 완료 ({used_rounds}회)"
         )
 
-        # 가상 조작 시뮬 ML 레이블도 업데이트 (창이 열려있으면)
-        if hasattr(self, 'rig_ml_label') and self.rig_ml_label is not None:
-            try:
-                val = self.rig_ml_weight.get()
-                self.rig_ml_label.config(text=f"{val}% ({model_name})")
-            except Exception:
-                pass
+        # 가상 조작 시뮬 ML 레이블도 업데이트
+        self._update_rig_ml_label()
 
         messagebox.showinfo(
             "학습 완료",
@@ -1104,21 +1099,9 @@ class LottoApp(tk.Tk):
         self.rig_ml_label = ttk.Label(top, text="30% (ML 학습 필요)")
         self.rig_ml_label.grid(row=3, column=2, sticky="w")
 
-        # ML 가중치 변경 시 레이블 업데이트
-        def update_ml_label(*_):
-            val = self.rig_ml_weight.get()
-            if self.ml_model is None:
-                self.rig_ml_label.config(text=f"{val}% (ML 학습 필요)")
-            else:
-                model_name = {
-                    "logistic": "로지스틱",
-                    "random_forest": "랜덤포레스트",
-                    "gradient_boosting": "그래디언트부스팅",
-                    "neural_network": "신경망",
-                }.get(self.ml_model.get("type", ""), "ML")
-                self.rig_ml_label.config(text=f"{val}% ({model_name})")
-        self.rig_ml_weight.trace_add("write", update_ml_label)
-        update_ml_label()
+        # ML 가중치 변경 시 레이블 업데이트 (외부에서 호출 가능하도록)
+        self.rig_ml_weight.trace_add("write", lambda *_: self._update_rig_ml_label())
+        self._update_rig_ml_label()  # 초기 업데이트
 
         # 진행률 표시 (Progressbar + Label)
         progress_frame = ttk.Frame(win)
@@ -1409,6 +1392,23 @@ class LottoApp(tk.Tk):
             ))
 
         threading.Thread(target=task, daemon=True).start()
+
+    def _update_rig_ml_label(self):
+        """가상 조작 시뮬 ML 가중치 레이블 업데이트"""
+        if self.rig_ml_label is None:
+            return
+
+        val = self.rig_ml_weight.get()
+        if self.ml_model is None:
+            self.rig_ml_label.config(text=f"{val}% (ML 학습 필요)")
+        else:
+            model_name = {
+                "logistic": "로지스틱",
+                "random_forest": "랜덤포레스트",
+                "gradient_boosting": "그래디언트부스팅",
+                "neural_network": "신경망",
+            }.get(self.ml_model.get("type", ""), "ML")
+            self.rig_ml_label.config(text=f"{val}% ({model_name})")
 
     def _update_rig_progress(self, percent: float, message: str):
         """가상 조작 시뮬 진행률 업데이트"""
