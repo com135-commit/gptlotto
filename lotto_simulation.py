@@ -10,6 +10,10 @@
 """
 
 from __future__ import annotations
+
+# Numba CUDA 에러 메시지 숨기기
+import os
+os.environ['NUMBA_DISABLE_CUDA'] = '1'
 import numpy as np
 import pandas as pd
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -18,11 +22,91 @@ from lotto_generators import generate_random_sets
 
 _rng = get_rng()
 
+# Numba JIT 지원
+try:
+    from numba import jit
+    HAS_NUMBA = True
+    print("Numba JIT detected - simulation acceleration available")
+except ImportError:
+    HAS_NUMBA = False
+    def jit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 # GPU 지원 확인
 try:
     import cupy as cp
 except Exception:
     cp = None
+
+
+@jit(nopython=True, cache=True)
+def _count_matches_jit(draw, user_set):
+    """Numba JIT: 한 회차의 추첨 번호와 사용자 세트 비교"""
+    count = 0
+    for num in draw:
+        for user_num in user_set:
+            if num == user_num:
+                count += 1
+                break
+    return count
+
+
+@jit(nopython=True, cache=True)
+def _simulate_batch_jit(draws_batch, bonus_batch, sets_2d, include_bonus):
+    """
+    Numba JIT: 배치 단위 시뮬레이션 (핵심 루프)
+
+    Parameters:
+    - draws_batch: (B, 6) 추첨 번호들
+    - bonus_batch: (B,) 보너스 번호들
+    - sets_2d: (S, 6) 사용자 세트들 (정렬된 상태)
+    - include_bonus: 보너스 번호 포함 여부
+
+    Returns:
+    - match_bins: (S, 7) 매칭 카운트
+    - bonus5_counts: (S,) 5+bonus 카운트
+    """
+    B = draws_batch.shape[0]
+    S = sets_2d.shape[0]
+
+    match_bins = np.zeros((S, 7), dtype=np.int64)
+    bonus5_counts = np.zeros(S, dtype=np.int64)
+
+    for idx in range(S):
+        user_set = sets_2d[idx]
+
+        for b in range(B):
+            draw = draws_batch[b]
+
+            # 매칭 개수 계산
+            match_count = _count_matches_jit(draw, user_set)
+            match_bins[idx, match_count] += 1
+
+            # 5+bonus 체크
+            if include_bonus and match_count == 5:
+                bonus = bonus_batch[b]
+                # 보너스가 사용자 세트에 있고, 추첨 6개에는 없는지 확인
+                bonus_in_set = False
+                for user_num in user_set:
+                    if bonus == user_num:
+                        bonus_in_set = True
+                        break
+
+                if bonus_in_set:
+                    # 보너스가 추첨 6개에 없는지 확인
+                    bonus_in_draw = False
+                    for draw_num in draw:
+                        if bonus == draw_num:
+                            bonus_in_draw = True
+                            break
+
+                    if not bonus_in_draw:
+                        bonus5_counts[idx] += 1
+
+    return match_bins, bonus5_counts
+
 
 def simulate_chunk(
     draws: int,
@@ -30,6 +114,7 @@ def simulate_chunk(
     seed: int,
     sets_array: list[np.ndarray],
     include_bonus: bool = True,
+    progress_callback=None,  # 진행률 콜백 함수 추가
 ):
     rng = np.random.default_rng(seed)
     S = len(sets_array)
@@ -42,9 +127,12 @@ def simulate_chunk(
     nums_all = np.arange(1, 46, dtype=np.int16)
 
     remaining = draws
+    completed = 0
+
     while remaining > 0:
         b = min(batch, remaining)
         remaining -= b
+        completed += b
 
         draws_batch = np.empty((b, 6), dtype=np.int16)
         bonus_batch = np.empty(b, dtype=np.int16) if include_bonus else None
@@ -57,23 +145,47 @@ def simulate_chunk(
             if include_bonus:
                 bonus_batch[i] = balls[6]
 
-        for idx, s in enumerate(sets_array):
-            matches_vec = np.isin(draws_batch, s).sum(axis=1)
-            counts = np.bincount(matches_vec, minlength=7)
-            match_bins[idx, :7] += counts
-            agg_bins[:7] += counts
+        # Numba JIT 최적화 버전 사용
+        if HAS_NUMBA:
+            # 사용자 세트를 2D 배열로 변환 (모두 6개씩, 정렬된 상태)
+            sets_2d = np.array(sets_array, dtype=np.int16)
 
-            if include_bonus:
-                bonus_in_set = np.isin(bonus_batch, s)
-                not_in_row = np.ones(b, dtype=bool)
-                for j in range(b):
-                    row = draws_batch[j]
-                    c = bonus_batch[j]
-                    pos = np.searchsorted(row, c)
-                    not_in_row[j] = not (pos < 6 and row[pos] == c)
-                cond = (matches_vec == 5) & bonus_in_set & not_in_row
-                bonus5_counts[idx] += int(cond.sum())
-                agg_bonus5 += int(cond.sum())
+            # JIT 함수 호출
+            batch_match_bins, batch_bonus5_counts = _simulate_batch_jit(
+                draws_batch, bonus_batch if include_bonus else np.zeros(b, dtype=np.int16),
+                sets_2d, include_bonus
+            )
+
+            # 결과 누적
+            match_bins += batch_match_bins
+            bonus5_counts += batch_bonus5_counts
+            for idx in range(S):
+                agg_bins += batch_match_bins[idx]
+                agg_bonus5 += batch_bonus5_counts[idx]
+        else:
+            # 기존 Python 버전 (Numba 없을 때)
+            for idx, s in enumerate(sets_array):
+                matches_vec = np.isin(draws_batch, s).sum(axis=1)
+                counts = np.bincount(matches_vec, minlength=7)
+                match_bins[idx, :7] += counts
+                agg_bins[:7] += counts
+
+                if include_bonus:
+                    bonus_in_set = np.isin(bonus_batch, s)
+                    not_in_row = np.ones(b, dtype=bool)
+                    for j in range(b):
+                        row = draws_batch[j]
+                        c = bonus_batch[j]
+                        pos = np.searchsorted(row, c)
+                        not_in_row[j] = not (pos < 6 and row[pos] == c)
+                    cond = (matches_vec == 5) & bonus_in_set & not_in_row
+                    bonus5_counts[idx] += int(cond.sum())
+                    agg_bonus5 += int(cond.sum())
+
+        # 진행률 콜백 호출
+        if progress_callback:
+            progress = (completed / draws) * 100
+            progress_callback(completed, draws, progress)
 
     return match_bins, bonus5_counts, agg_bins, agg_bonus5
 
@@ -615,11 +727,19 @@ def _rigged_candidate_chunk(
     scale_factor: float,
     tmin: int,
     tmax: int,
+    ml_model=None,
+    ml_weight: float = 0.0,
+    history_df=None,
 ) -> list[tuple[list[int], float]]:
     """
     n_samples 만큼 후보 당첨 번호를 생성하고,
     각 번호에 대한 예상 1등 인원 λ를 계산해
     [tmin, tmax] 범위에 들어가는 것만 반환.
+
+    ML 적용:
+    - ml_model이 있으면 ML 점수도 함께 계산
+    - ml_weight로 ML 점수의 중요도 조절
+    - ML 점수가 높은 번호를 우선 선택
     """
     if weights is None:
         w = None
@@ -634,16 +754,57 @@ def _rigged_candidate_chunk(
     if n_samples <= 0:
         return results
 
+    # ML 사용 여부 결정
+    use_ml = ml_model is not None and ml_weight > 0 and history_df is not None
+
+    # 더 많이 생성 (ML 필터링 고려)
+    if use_ml:
+        # ML 필터링으로 걸러질 것을 대비해 3배 생성
+        gen_samples = n_samples * 3
+    else:
+        gen_samples = n_samples
+
     draws_list = generate_random_sets(
-        n_samples,
+        gen_samples,
         avoid_duplicates=False,
         weights=w,
         exclude_set=None,
     )
-    for draw in draws_list:
-        lam = estimate_expected_winners_from_pool(draw, ticket_pool, scale_factor)
-        if tmin <= lam <= tmax:
+
+    # ML 점수 계산 (필요시)
+    if use_ml:
+        from lotto_generators import ml_score_set
+        scored_draws = []
+        for draw in draws_list:
+            lam = estimate_expected_winners_from_pool(draw, ticket_pool, scale_factor)
+            if tmin <= lam <= tmax:
+                # ML 점수 계산
+                try:
+                    ml_score = ml_score_set(draw, ml_model, weights, history_df)
+                except Exception:
+                    ml_score = 0.5  # 기본값
+
+                # 복합 점수: ML 점수 반영
+                # lam이 목표 중앙값에 가까울수록 좋고, ML 점수도 높을수록 좋음
+                center = 0.5 * (tmin + tmax)
+                lam_score = 1.0 - abs(lam - center) / max(1, tmax - tmin)
+
+                combined_score = (1 - ml_weight) * lam_score + ml_weight * ml_score
+                scored_draws.append((draw, lam, combined_score))
+
+        # 복합 점수 기준 정렬 (높은 점수 우선)
+        scored_draws.sort(key=lambda x: x[2], reverse=True)
+
+        # 상위 n_samples개 선택
+        for draw, lam, _ in scored_draws[:n_samples]:
             results.append((draw, lam))
+    else:
+        # 기존 방식 (ML 없이)
+        for draw in draws_list:
+            lam = estimate_expected_winners_from_pool(draw, ticket_pool, scale_factor)
+            if tmin <= lam <= tmax:
+                results.append((draw, lam))
+
     return results
 
 

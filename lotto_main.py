@@ -1079,6 +1079,37 @@ class LottoApp(tk.Tk):
         )
         ttk.Label(top, text="(예: 400000)").grid(row=2, column=2, sticky="w")
 
+        # ★ ML 가중치 슬라이더
+        self.rig_ml_weight = tk.IntVar(value=30)
+        ttk.Label(top, text="ML 가중치(%)").grid(row=3, column=0, sticky="e", pady=4)
+        ml_scale = tk.Scale(
+            top,
+            from_=0,
+            to=100,
+            orient="horizontal",
+            variable=self.rig_ml_weight,
+            length=150,
+        )
+        ml_scale.grid(row=3, column=1, sticky="w", padx=4)
+        self.rig_ml_label = ttk.Label(top, text="30% (ML 학습 필요)")
+        self.rig_ml_label.grid(row=3, column=2, sticky="w")
+
+        # ML 가중치 변경 시 레이블 업데이트
+        def update_ml_label(*_):
+            val = self.rig_ml_weight.get()
+            if self.ml_model is None:
+                self.rig_ml_label.config(text=f"{val}% (ML 학습 필요)")
+            else:
+                model_name = {
+                    "logistic": "로지스틱",
+                    "random_forest": "랜덤포레스트",
+                    "gradient_boosting": "그래디언트부스팅",
+                    "neural_network": "신경망",
+                }.get(self.ml_model.get("type", ""), "ML")
+                self.rig_ml_label.config(text=f"{val}% ({model_name})")
+        self.rig_ml_weight.trace_add("write", update_ml_label)
+        update_ml_label()
+
         # 진행률 표시 (Progressbar + Label)
         progress_frame = ttk.Frame(win)
         progress_frame.pack(fill=tk.X, padx=10, pady=4)
@@ -1319,6 +1350,9 @@ class LottoApp(tk.Tk):
                     n_i = per_worker + (1 if i < remainder else 0)
                     if n_i <= 0:
                         continue
+                    # ML 가중치 읽기 (0-100 → 0.0-1.0)
+                    ml_weight_val = self.rig_ml_weight.get() / 100.0
+
                     futures.append(
                         ex.submit(
                             _rigged_candidate_chunk,
@@ -1328,6 +1362,9 @@ class LottoApp(tk.Tk):
                             scale_factor,
                             tmin,
                             tmax,
+                            self.ml_model,  # ML 모델 전달
+                            ml_weight_val,  # ML 가중치 (슬라이더 값)
+                            self.history_df,  # history_df 전달
                         )
                     )
 
