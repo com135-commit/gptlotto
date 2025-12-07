@@ -227,12 +227,37 @@ class LottoApp(tk.Tk):
         )
 
         # ★ 추가: AI 세트 평점 학습 회차 수
-        ttk.Label(hist, text="AI 학습 회차 수(최근 N회, 비우면 전체)").grid(
+        ttk.Label(hist, text="AI 학습 회차 수:").grid(
             row=2, column=0, sticky="e", pady=(4, 2)
         )
-        ttk.Entry(hist, textvariable=self.ai_max_rounds, width=10).grid(
-            row=2, column=1, sticky="w", padx=6, pady=(4, 2)
+        # 슬라이더로 변경 (50~1000, 1000=전체)
+        self.ai_rounds_slider = tk.IntVar(value=200)
+        scale_ai = tk.Scale(
+            hist,
+            from_=50,
+            to=1000,
+            orient="horizontal",
+            variable=self.ai_rounds_slider,
+            length=200,
+            showvalue=0,
         )
+        scale_ai.grid(row=2, column=1, sticky="w", padx=6, pady=(4, 2))
+
+        # 현재 값 레이블
+        self.ai_rounds_label = ttk.Label(hist, text="200회")
+        self.ai_rounds_label.grid(row=2, column=2, sticky="w", padx=4)
+
+        # 슬라이더 값 변경 시 ai_max_rounds 업데이트
+        def update_ai_rounds(*_):
+            val = self.ai_rounds_slider.get()
+            if val >= 1000:
+                self.ai_max_rounds.set("")  # 전체
+                self.ai_rounds_label.config(text="전체")
+            else:
+                self.ai_max_rounds.set(str(val))
+                self.ai_rounds_label.config(text=f"{val}회")
+        self.ai_rounds_slider.trace_add("write", update_ai_rounds)
+        update_ai_rounds()  # 초기값 설정
 
         frm = ttk.LabelFrame(top, text="번호 추출기")
         frm.pack(fill=tk.X, padx=10, pady=10)

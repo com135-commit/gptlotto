@@ -432,9 +432,15 @@ def _set_features(
     weights=None,
     history_df: pd.DataFrame | None = None,
 ) -> np.ndarray:
+    """
+    번호 조합의 특징 추출 (30개 특징)
+
+    기존 10개 + 신규 20개 = 총 30개 특징
+    """
     nums = sorted(nums)
     arr = np.array(nums, dtype=float)
 
+    # ===== 기존 특징 (10개) =====
     f_mean = arr.mean() / 45.0
     f_std = arr.std() / 20.0
 
@@ -460,18 +466,126 @@ def _set_features(
         f_hmean = 0.0
         f_hmax = 0.0
 
+    # ===== 신규 특징 (20개) =====
+
+    # 통계적 특징 (5개)
+    f_min = arr.min() / 45.0
+    f_max = arr.max() / 45.0
+    f_median = float(np.median(arr)) / 45.0
+    f_range = (arr.max() - arr.min()) / 45.0
+    q1, q3 = np.percentile(arr, [25, 75])
+    f_iqr = (q3 - q1) / 45.0
+
+    # 번호 패턴 특징 (8개)
+    # 연속 번호 개수
+    consecutive_count = sum(1 for i in range(len(nums)-1) if nums[i+1] - nums[i] == 1)
+    f_consecutive = consecutive_count / 5.0
+
+    # 최대 연속 길이
+    max_consecutive = 1
+    current_consecutive = 1
+    for i in range(len(nums)-1):
+        if nums[i+1] - nums[i] == 1:
+            current_consecutive += 1
+            max_consecutive = max(max_consecutive, current_consecutive)
+        else:
+            current_consecutive = 1
+    f_max_consecutive = max_consecutive / 6.0
+
+    # 끝자리 다양성
+    last_digits = [n % 10 for n in nums]
+    unique_last_digits = len(set(last_digits))
+    f_last_digit_diversity = unique_last_digits / 6.0
+    f_last_digit_dup = (6 - unique_last_digits) / 6.0
+
+    # 배수 개수
+    f_mult3 = sum(1 for n in nums if n % 3 == 0) / 6.0
+    f_mult5 = sum(1 for n in nums if n % 5 == 0) / 6.0
+
+    # 소수 개수
+    def is_prime(n):
+        if n < 2: return False
+        if n == 2: return True
+        if n % 2 == 0: return False
+        for i in range(3, int(n**0.5) + 1, 2):
+            if n % i == 0: return False
+        return True
+    f_primes = sum(1 for n in nums if is_prime(n)) / 6.0
+
+    # 대칭성 (중앙값 23 기준)
+    center = 23.0
+    symmetry_errors = sum(abs((n - center) + (center - (46 - n))) for n in nums)
+    f_symmetry = max(0.0, 1.0 - (symmetry_errors / (6 * 45)))
+
+    # 간격 패턴 특징 (4개)
+    if len(gaps) > 0:
+        f_gap_min = gaps.min() / 10.0
+        f_gap_max = gaps.max() / 10.0
+        f_gap_median = float(np.median(gaps)) / 10.0
+        f_gap_cv = (gaps.std() / gaps.mean()) if gaps.mean() > 0 else 0.0
+    else:
+        f_gap_min = f_gap_max = f_gap_median = f_gap_cv = 0.0
+
+    # 확률적 특징 (2개)
+    f_freq_avg = 0.0
+    f_recent = 0.0
+    if history_df is not None and not history_df.empty:
+        # 각 번호의 출현 빈도
+        all_nums = []
+        for row in history_df.itertuples(index=False):
+            for val in row:
+                try:
+                    v = int(val)
+                    if 1 <= v <= 45:
+                        all_nums.append(v)
+                except (ValueError, TypeError):
+                    continue
+
+        if all_nums:
+            from collections import Counter
+            freq_counter = Counter(all_nums)
+            avg_freq = np.mean([freq_counter.get(n, 0) for n in nums])
+            max_freq = max(freq_counter.values()) if freq_counter else 1
+            f_freq_avg = avg_freq / max_freq if max_freq > 0 else 0.0
+
+            # 최근 10회 출현도
+            recent_nums = set()
+            for row in history_df.head(10).itertuples(index=False):
+                for val in row:
+                    try:
+                        v = int(val)
+                        if 1 <= v <= 45:
+                            recent_nums.add(v)
+                    except (ValueError, TypeError):
+                        continue
+            f_recent = sum(1 for n in nums if n in recent_nums) / 6.0
+
+    # 고차원 특징 (1개)
+    f_sum_last_digit = (sum(nums) % 10) / 10.0
+
+    # ===== 특징 벡터 구성 (30개) =====
     feats = np.array(
         [
-            f_mean,
-            f_std,
-            evens,
-            low,
-            mid,
-            high,
-            f_gmean,
-            f_gstd,
-            f_hmean,
-            f_hmax,
+            # 기존 10개
+            f_mean, f_std, evens, low, mid, high,
+            f_gmean, f_gstd, f_hmean, f_hmax,
+
+            # 통계적 5개
+            f_min, f_max, f_median, f_range, f_iqr,
+
+            # 번호 패턴 8개
+            f_consecutive, f_max_consecutive,
+            f_last_digit_diversity, f_last_digit_dup,
+            f_mult3, f_mult5, f_primes, f_symmetry,
+
+            # 간격 패턴 4개
+            f_gap_min, f_gap_max, f_gap_median, f_gap_cv,
+
+            # 확률적 2개
+            f_freq_avg, f_recent,
+
+            # 고차원 1개
+            f_sum_last_digit,
         ],
         dtype=float,
     )
@@ -483,15 +597,24 @@ def train_ml_scorer(
     weights=None,
     n_neg_per_pos: int = 5,
     max_rounds: int | None = 200,
-    epochs: int = 60,
-    lr: float = 0.1,
+    epochs: int = 120,
+    lr: float = 0.05,
+    use_hard_negatives: bool = True,
 ) -> dict:
     """
-    AI 세트 평점 학습용 간단 로지스틱 회귀.
+    AI 세트 평점 학습 (개선된 버전)
 
-    max_rounds:
-      - None 또는 0 이하: 전체 history_df 사용
-      - 양의 정수: 최근 max_rounds 회만 사용
+    Parameters:
+        history_df: 과거 당첨 번호 데이터프레임
+        weights: 번호 가중치 (45개)
+        n_neg_per_pos: 양성 샘플당 음성 샘플 비율
+        max_rounds: 사용할 최근 회차 수 (None=전체)
+        epochs: 학습 반복 횟수 (60→120 증가)
+        lr: 학습률 (0.1→0.05 감소로 안정화)
+        use_hard_negatives: 하드 네거티브 샘플링 사용 여부
+
+    Returns:
+        학습된 모델 dict (w, b, mu, sigma)
     """
     if history_df is None or history_df.empty:
         raise ValueError("히스토리 없음: ML 학습 불가")
@@ -512,12 +635,46 @@ def train_ml_scorer(
     X_list = []
     y_list = []
 
+    # 양성 샘플
     for s in pos_sets:
         X_list.append(_set_features(s, weights, history_df))
         y_list.append(1.0)
 
+    # 음성 샘플 생성
     n_neg = len(pos_sets) * n_neg_per_pos
-    neg_sets = generate_random_sets(n_neg, avoid_duplicates=True, weights=weights, exclude_set=None)
+
+    if use_hard_negatives:
+        # 하드 네거티브 샘플링: 50% 랜덤 + 50% 변형
+        n_random = n_neg // 2
+        n_mutated = n_neg - n_random
+
+        # 1) 완전 랜덤 음성 샘플
+        neg_sets = generate_random_sets(n_random, avoid_duplicates=True, weights=weights, exclude_set=None)
+
+        # 2) 하드 네거티브: 양성 샘플을 약간 변형 (1-2개 번호만 변경)
+        # → 모델이 세밀한 차이를 학습하도록 유도
+        for _ in range(n_mutated):
+            # 무작위로 양성 샘플 선택
+            base = pos_sets[_rng.integers(0, len(pos_sets))].copy()
+
+            # 1-2개 번호 변경
+            num_changes = _rng.integers(1, 3)  # 1 or 2
+            for _ in range(num_changes):
+                # 기존 번호 중 하나 제거
+                remove_idx = _rng.integers(0, len(base))
+                old_num = base[remove_idx]
+
+                # 새 번호 선택 (기존에 없는 번호)
+                available = [n for n in range(1, 46) if n not in base]
+                if available:
+                    new_num = _rng.choice(available)
+                    base[remove_idx] = new_num
+
+            neg_sets.append(sorted(base))
+    else:
+        # 기존 방식: 완전 랜덤만
+        neg_sets = generate_random_sets(n_neg, avoid_duplicates=True, weights=weights, exclude_set=None)
+
     for s in neg_sets:
         X_list.append(_set_features(s, weights, history_df))
         y_list.append(0.0)
@@ -525,6 +682,7 @@ def train_ml_scorer(
     X = np.vstack(X_list)
     y = np.array(y_list, dtype=float)
 
+    # 특징 정규화
     mu = X.mean(axis=0)
     sigma = X.std(axis=0)
     sigma[sigma < 1e-6] = 1.0
@@ -534,19 +692,54 @@ def train_ml_scorer(
     w = np.zeros(D, dtype=float)
     b = 0.0
 
-    for _ in range(epochs):
+    # 학습 (조기 종료 포함)
+    best_loss = float('inf')
+    patience = 20  # 20 epoch 동안 개선 없으면 종료
+    patience_counter = 0
+
+    print(f"[ML 학습] 샘플: {N}개 (양성: {len(pos_sets)}, 음성: {len(neg_sets)}), 특징: {D}개")
+    print(f"[ML 학습] Epochs: {epochs}, LR: {lr}, 하드네거티브: {use_hard_negatives}")
+
+    for epoch in range(epochs):
+        # Forward pass
         z = Xn @ w + b
         p = 1.0 / (1.0 + np.exp(-z))
+
+        # Loss (Binary Cross-Entropy)
+        loss = -np.mean(y * np.log(p + 1e-10) + (1 - y) * np.log(1 - p + 1e-10))
+
+        # Backward pass
         grad_w = (Xn.T @ (p - y)) / N
         grad_b = float((p - y).mean())
         w -= lr * grad_w
         b -= lr * grad_b
+
+        # 진행률 표시 (매 20 epoch마다)
+        if (epoch + 1) % 20 == 0:
+            acc = ((p > 0.5) == y).mean()
+            print(f"  Epoch {epoch+1}/{epochs}: Loss={loss:.4f}, Acc={acc:.2%}")
+
+        # 조기 종료 체크
+        if loss < best_loss - 1e-4:  # 의미있는 개선
+            best_loss = loss
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"  조기 종료: {epoch+1} epoch (개선 없음)")
+                break
+
+    final_acc = ((p > 0.5) == y).mean()
+    print(f"[ML 학습 완료] 최종 정확도: {final_acc:.2%}, Loss: {loss:.4f}")
 
     model = {
         "w": w,
         "b": b,
         "mu": mu,
         "sigma": sigma,
+        "accuracy": float(final_acc),
+        "loss": float(loss),
+        "n_features": D,
     }
     return model
 
