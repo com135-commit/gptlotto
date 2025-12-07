@@ -488,12 +488,16 @@ class LottoApp(tk.Tk):
         # ML 학습 실행
         try:
             model_type = self.ml_model_type.get()
+            print(f"[DEBUG 학습 시작] GUI에서 선택한 모델 타입: '{model_type}'")
+
             trained_model = train_ml_scorer(
                 self.history_df,
                 weights=w_bal,
                 max_rounds=max_rounds,
                 model_type=model_type,
             )
+
+            print(f"[DEBUG 학습 완료] 실제 학습된 모델 타입: '{trained_model.get('type', 'None')}')")
 
             # 학습 성공 - 메인 스레드에서 UI 업데이트
             if max_rounds is None:
