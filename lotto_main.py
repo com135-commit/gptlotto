@@ -99,6 +99,8 @@ class LottoApp(tk.Tk):
         # ★ 가상 조작 시뮬 진행률 표시 위젯
         self.rig_progressbar = None
         self.rig_progress_label = None
+        self.rig_ml_label = None  # ML 가중치 레이블
+        self.rig_ml_weight = tk.IntVar(value=30)  # ML 가중치 변수
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
@@ -523,6 +525,15 @@ class LottoApp(tk.Tk):
         self.lbl_ai.config(
             text=f"AI 세트 평점: {model_name} 학습 완료 ({used_rounds}회)"
         )
+
+        # 가상 조작 시뮬 ML 레이블도 업데이트 (창이 열려있으면)
+        if hasattr(self, 'rig_ml_label') and self.rig_ml_label is not None:
+            try:
+                val = self.rig_ml_weight.get()
+                self.rig_ml_label.config(text=f"{val}% ({model_name})")
+            except Exception:
+                pass
+
         messagebox.showinfo(
             "학습 완료",
             f"✅ {model_name} 모델 학습 완료!\n"
@@ -1079,8 +1090,7 @@ class LottoApp(tk.Tk):
         )
         ttk.Label(top, text="(예: 400000)").grid(row=2, column=2, sticky="w")
 
-        # ★ ML 가중치 슬라이더
-        self.rig_ml_weight = tk.IntVar(value=30)
+        # ★ ML 가중치 슬라이더 (변수는 __init__에서 이미 초기화됨)
         ttk.Label(top, text="ML 가중치(%)").grid(row=3, column=0, sticky="e", pady=4)
         ml_scale = tk.Scale(
             top,
