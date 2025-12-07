@@ -600,6 +600,7 @@ def train_ml_scorer(
     epochs: int = 120,
     lr: float = 0.05,
     use_hard_negatives: bool = True,
+    model_type: str = "logistic",  # "logistic", "random_forest", "gradient_boosting", "neural_network"
 ) -> dict:
     """
     AI 세트 평점 학습 (개선된 버전)
@@ -729,19 +730,109 @@ def train_ml_scorer(
                 print(f"  조기 종료: {epoch+1} epoch (개선 없음)")
                 break
 
-    final_acc = ((p > 0.5) == y).mean()
-    print(f"[ML 학습 완료] 최종 정확도: {final_acc:.2%}, Loss: {loss:.4f}")
+    # 모델 타입에 따라 다른 알고리즘 사용
+    if model_type == "logistic":
+        # 기존 로지스틱 회귀 (이미 구현됨)
+        final_acc = ((p > 0.5) == y).mean()
+        print(f"[ML 학습 완료] 최종 정확도: {final_acc:.2%}, Loss: {loss:.4f}")
 
-    model = {
-        "w": w,
-        "b": b,
-        "mu": mu,
-        "sigma": sigma,
-        "accuracy": float(final_acc),
-        "loss": float(loss),
-        "n_features": D,
-    }
-    return model
+        model = {
+            "type": "logistic",
+            "w": w,
+            "b": b,
+            "mu": mu,
+            "sigma": sigma,
+            "accuracy": float(final_acc),
+            "loss": float(loss),
+            "n_features": D,
+        }
+        return model
+
+    elif model_type in ["random_forest", "gradient_boosting", "neural_network"]:
+        # sklearn 기반 강력한 모델
+        try:
+            from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+            from sklearn.neural_network import MLPClassifier
+            from sklearn.model_selection import cross_val_score
+        except ImportError:
+            print("[경고] scikit-learn 필요. pip install scikit-learn")
+            print("[대체] 기본 로지스틱 회귀 사용")
+            model_type = "logistic"
+            # 위의 로지스틱 회귀 코드 재사용
+            final_acc = ((p > 0.5) == y).mean()
+            return {
+                "type": "logistic",
+                "w": w,
+                "b": b,
+                "mu": mu,
+                "sigma": sigma,
+                "accuracy": float(final_acc),
+                "loss": float(loss),
+                "n_features": D,
+            }
+
+        # sklearn 모델 생성
+        if model_type == "random_forest":
+            print("[ML 학습] 모델: 랜덤 포레스트 (200 trees)")
+            sklearn_model = RandomForestClassifier(
+                n_estimators=200,
+                max_depth=10,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                random_state=42,
+                n_jobs=-1,  # 모든 CPU 사용
+            )
+        elif model_type == "gradient_boosting":
+            print("[ML 학습] 모델: 그래디언트 부스팅 (100 estimators)")
+            sklearn_model = GradientBoostingClassifier(
+                n_estimators=100,
+                learning_rate=0.1,
+                max_depth=5,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                random_state=42,
+            )
+        else:  # neural_network
+            print("[ML 학습] 모델: 신경망 (50-30-10 layers)")
+            sklearn_model = MLPClassifier(
+                hidden_layer_sizes=(50, 30, 10),
+                max_iter=200,
+                learning_rate_init=0.01,
+                early_stopping=True,
+                validation_fraction=0.1,
+                random_state=42,
+            )
+
+        # 학습
+        print(f"[ML 학습] 샘플: {N}개, 특징: {D}개")
+        sklearn_model.fit(Xn, y)
+
+        # 교차 검증
+        cv_scores = cross_val_score(sklearn_model, Xn, y, cv=5)
+        train_acc = sklearn_model.score(Xn, y)
+
+        print(f"[ML 학습 완료] 훈련 정확도: {train_acc:.2%}")
+        print(f"[교차 검증] 평균: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})")
+
+        # 특징 중요도 (랜덤 포레스트, 그래디언트 부스팅만)
+        if hasattr(sklearn_model, 'feature_importances_'):
+            importances = sklearn_model.feature_importances_
+            top_features = np.argsort(importances)[-5:][::-1]
+            print(f"[특징 중요도] 상위 5개: {top_features.tolist()}")
+
+        model = {
+            "type": model_type,
+            "sklearn_model": sklearn_model,
+            "mu": mu,
+            "sigma": sigma,
+            "accuracy": float(train_acc),
+            "cv_scores": cv_scores.tolist(),
+            "n_features": D,
+        }
+        return model
+
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}")
 
 
 def ml_score_set(
@@ -750,19 +841,59 @@ def ml_score_set(
     weights=None,
     history_df: pd.DataFrame | None = None,
 ) -> float:
+    """
+    ML 모델로 번호 조합 점수 계산
+
+    모든 모델 타입 지원:
+    - logistic: 로지스틱 회귀
+    - random_forest: 랜덤 포레스트
+    - gradient_boosting: 그래디언트 부스팅
+    - neural_network: 신경망
+    """
     if model is None:
         return 0.0
+
+    # 특징 추출
     feats = _set_features(nums, weights, history_df)
-    w = model.get("w")
-    b = model.get("b", 0.0)
     mu = model.get("mu")
     sig = model.get("sigma")
-    if w is None or mu is None or sig is None:
+    if mu is None or sig is None:
         return 0.0
+
+    # 정규화
     x = (feats - mu) / sig
-    z = float(np.dot(w, x) + b)
-    s = 1.0 / (1.0 + np.exp(-z))
-    return s
+    x = x.reshape(1, -1)  # sklearn 호환 shape
+
+    # 모델 타입에 따라 다른 방식으로 점수 계산
+    model_type = model.get("type", "logistic")
+
+    if model_type == "logistic":
+        # 로지스틱 회귀
+        w = model.get("w")
+        b = model.get("b", 0.0)
+        if w is None:
+            return 0.0
+        z = float(np.dot(w, x.flatten()) + b)
+        s = 1.0 / (1.0 + np.exp(-z))
+        return s
+
+    elif model_type in ["random_forest", "gradient_boosting", "neural_network"]:
+        # sklearn 모델
+        sklearn_model = model.get("sklearn_model")
+        if sklearn_model is None:
+            return 0.0
+
+        try:
+            # predict_proba로 확률 반환 (클래스 1의 확률)
+            proba = sklearn_model.predict_proba(x)[0, 1]
+            return float(proba)
+        except Exception:
+            # predict_proba 실패 시 predict 사용
+            pred = sklearn_model.predict(x)[0]
+            return float(pred)
+
+    else:
+        return 0.0
 
 
 # ------------------ HD(초다양성) ------------------

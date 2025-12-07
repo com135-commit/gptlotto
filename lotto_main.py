@@ -81,6 +81,8 @@ class LottoApp(tk.Tk):
 
         # ★ AI 세트 평점 학습 회차 수 (GUI)
         self.ai_max_rounds = tk.StringVar(value="200")
+        # ★ ML 모델 타입
+        self.ml_model_type = tk.StringVar(value="logistic")
 
         # 가상 조작 시뮬 관련 상태
         self.rig_win = None
@@ -259,6 +261,41 @@ class LottoApp(tk.Tk):
         self.ai_rounds_slider.trace_add("write", update_ai_rounds)
         update_ai_rounds()  # 초기값 설정
 
+        # ML 모델 타입 선택
+        ttk.Label(hist, text="ML 모델 타입:").grid(
+            row=3, column=0, sticky="e", pady=(4, 2)
+        )
+        model_combo = ttk.Combobox(
+            hist,
+            textvariable=self.ml_model_type,
+            values=[
+                "logistic",
+                "random_forest",
+                "gradient_boosting",
+                "neural_network",
+            ],
+            state="readonly",
+            width=18,
+        )
+        model_combo.grid(row=3, column=1, sticky="w", padx=6, pady=(4, 2))
+
+        # 모델 설명 레이블
+        self.ml_type_desc = ttk.Label(hist, text="로지스틱 회귀 (기본, 빠름)")
+        self.ml_type_desc.grid(row=3, column=2, sticky="w", padx=4)
+
+        # 모델 타입 변경 시 설명 업데이트
+        def update_model_desc(*_):
+            model = self.ml_model_type.get()
+            descriptions = {
+                "logistic": "로지스틱 회귀 (기본, 빠름)",
+                "random_forest": "랜덤 포레스트 (강력, 느림)",
+                "gradient_boosting": "그래디언트 부스팅 (정확, 느림)",
+                "neural_network": "신경망 (고급, 매우 느림)",
+            }
+            self.ml_type_desc.config(text=descriptions.get(model, ""))
+        self.ml_model_type.trace_add("write", update_model_desc)
+        update_model_desc()
+
         frm = ttk.LabelFrame(top, text="번호 추출기")
         frm.pack(fill=tk.X, padx=10, pady=10)
 
@@ -421,10 +458,12 @@ class LottoApp(tk.Tk):
             max_rounds = None
 
         try:
+            model_type = self.ml_model_type.get()
             self.ml_model = train_ml_scorer(
                 self.history_df,
                 weights=w_bal,
                 max_rounds=max_rounds,
+                model_type=model_type,
             )
         except Exception as e:
             self.ml_model = None
@@ -438,8 +477,14 @@ class LottoApp(tk.Tk):
                 used_rounds = len(self.history_df)
             else:
                 used_rounds = min(len(self.history_df), max_rounds)
+            model_name = {
+                "logistic": "로지스틱",
+                "random_forest": "랜덤포레스트",
+                "gradient_boosting": "그래디언트부스팅",
+                "neural_network": "신경망",
+            }.get(self.ml_model_type.get(), "ML")
             self.lbl_ai.config(
-                text=f"AI 세트 평점: 학습 완료 (최근 {used_rounds}회 사용)"
+                text=f"AI 세트 평점: {model_name} 학습 완료 ({used_rounds}회)"
             )
 
     def _prepare_history_weights(self):
