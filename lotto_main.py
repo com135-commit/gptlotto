@@ -507,7 +507,7 @@ class LottoApp(tk.Tk):
             }.get(model_type, "ML")
 
             # 메인 스레드에서 UI 업데이트
-            self.root.after(0, lambda: self._on_ml_training_success(
+            self.after(0, lambda: self._on_ml_training_success(
                 trained_model, model_name, used_rounds
             ))
 
@@ -515,7 +515,7 @@ class LottoApp(tk.Tk):
             # 학습 실패 - 메인 스레드에서 UI 업데이트
             import traceback
             traceback.print_exc()
-            self.root.after(0, lambda: self._on_ml_training_failure(str(e)))
+            self.after(0, lambda: self._on_ml_training_failure(str(e)))
 
     def _on_ml_training_success(self, model, model_name, used_rounds):
         """ML 학습 성공 시 UI 업데이트 (메인 스레드)"""
