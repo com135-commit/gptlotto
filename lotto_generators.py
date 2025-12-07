@@ -445,9 +445,9 @@ def _set_features(
     f_std = arr.std() / 20.0
 
     evens = sum(1 for v in nums if v % 2 == 0) / 6.0
-    low = sum(1 for v in nums if 1 <= v <= 20) / 6.0
-    mid = sum(1 for v in nums if 21 <= v <= 35) / 6.0
-    high = sum(1 for v in nums if 36 <= v <= 45) / 6.0
+    low = sum(1 for v in nums if 1 <= v <= 15) / 6.0
+    mid = sum(1 for v in nums if 16 <= v <= 30) / 6.0
+    high = sum(1 for v in nums if 31 <= v <= 45) / 6.0
 
     gaps = np.diff(arr)
     if len(gaps) > 0:
@@ -526,65 +526,75 @@ def _set_features(
     else:
         f_gap_min = f_gap_max = f_gap_median = f_gap_cv = 0.0
 
-    # 확률적 특징 (2개)
-    f_freq_avg = 0.0
-    f_recent = 0.0
-    if history_df is not None and not history_df.empty:
-        # 각 번호의 출현 빈도
-        all_nums = []
-        for row in history_df.itertuples(index=False):
-            for val in row:
-                try:
-                    v = int(val)
-                    if 1 <= v <= 45:
-                        all_nums.append(v)
-                except (ValueError, TypeError):
-                    continue
-
-        if all_nums:
-            from collections import Counter
-            freq_counter = Counter(all_nums)
-            avg_freq = np.mean([freq_counter.get(n, 0) for n in nums])
-            max_freq = max(freq_counter.values()) if freq_counter else 1
-            f_freq_avg = avg_freq / max_freq if max_freq > 0 else 0.0
-
-            # 최근 10회 출현도
-            recent_nums = set()
-            for row in history_df.head(10).itertuples(index=False):
-                for val in row:
-                    try:
-                        v = int(val)
-                        if 1 <= v <= 45:
-                            recent_nums.add(v)
-                    except (ValueError, TypeError):
-                        continue
-            f_recent = sum(1 for n in nums if n in recent_nums) / 6.0
+    # 확률적 특징 (2개) - 편향 제거를 위해 주석 처리
+    # f_freq_avg = 0.0
+    # f_recent = 0.0
+    # if history_df is not None and not history_df.empty:
+    #     # 각 번호의 출현 빈도
+    #     all_nums = []
+    #     for row in history_df.itertuples(index=False):
+    #         for val in row:
+    #             try:
+    #                 v = int(val)
+    #                 if 1 <= v <= 45:
+    #                     all_nums.append(v)
+    #             except (ValueError, TypeError):
+    #                 continue
+    #
+    #     if all_nums:
+    #         from collections import Counter
+    #         freq_counter = Counter(all_nums)
+    #         avg_freq = np.mean([freq_counter.get(n, 0) for n in nums])
+    #         max_freq = max(freq_counter.values()) if freq_counter else 1
+    #         f_freq_avg = avg_freq / max_freq if max_freq > 0 else 0.0
+    #
+    #         # 최근 10회 출현도
+    #         recent_nums = set()
+    #         for row in history_df.head(10).itertuples(index=False):
+    #             for val in row:
+    #                 try:
+    #                     v = int(val)
+    #                     if 1 <= v <= 45:
+    #                         recent_nums.add(v)
+    #                 except (ValueError, TypeError):
+    #                     continue
+    #         f_recent = sum(1 for n in nums if n in recent_nums) / 6.0
 
     # 고차원 특징 (1개)
     f_sum_last_digit = (sum(nums) % 10) / 10.0
 
-    # ===== 특징 벡터 구성 (30개) =====
+    # ===== 특징 벡터 구성 (20개 - 편향 특징 제거) =====
+    # 제거된 특징 (큰 번호 편향):
+    # - f_mean: 큰 번호에 유리
+    # - f_max: 45번에 유리
+    # - f_hmax: 큰 번호 가중치에 유리
+    # - f_gmean: 큰 번호에 유리
+    # - f_gstd: 간격 편향
+    # - f_hmean: 가중치 편향
+    # - f_freq_avg: 히스토리 편향
+    # - f_recent: 최근 편향
+    # - f_median: 큰 번호에 유리
+    # - f_min: 작은 번호에 유리
+
     feats = np.array(
         [
-            # 기존 10개
-            f_mean, f_std, evens, low, mid, high,
-            f_gmean, f_gstd, f_hmean, f_hmax,
+            # 기본 분포 특징 (5개) - 중립적
+            f_std, evens, low, mid, high,
+            # low/mid/high는 유지 (균형 체크용)
+            # 범위 재조정: 1-15 (저) / 16-30 (중) / 31-45 (고)
 
-            # 통계적 5개
-            f_min, f_max, f_median, f_range, f_iqr,
+            # 통계적 특징 (2개) - 중립적
+            f_range, f_iqr,
 
-            # 번호 패턴 8개
+            # 번호 패턴 8개 - 중립적
             f_consecutive, f_max_consecutive,
             f_last_digit_diversity, f_last_digit_dup,
             f_mult3, f_mult5, f_primes, f_symmetry,
 
-            # 간격 패턴 4개
+            # 간격 패턴 4개 - 중립적
             f_gap_min, f_gap_max, f_gap_median, f_gap_cv,
 
-            # 확률적 2개
-            f_freq_avg, f_recent,
-
-            # 고차원 1개
+            # 고차원 1개 - 중립적
             f_sum_last_digit,
         ],
         dtype=float,
