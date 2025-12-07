@@ -1402,12 +1402,19 @@ class LottoApp(tk.Tk):
         if self.ml_model is None:
             self.rig_ml_label.config(text=f"{val}% (ML 학습 필요)")
         else:
+            # 디버깅: 모델 타입 출력
+            model_type = self.ml_model.get("type", "")
+            print(f"[DEBUG] ML 모델 타입: '{model_type}'")
+            print(f"[DEBUG] ML 모델 전체: {list(self.ml_model.keys())}")
+
             model_name = {
                 "logistic": "로지스틱",
                 "random_forest": "랜덤포레스트",
                 "gradient_boosting": "그래디언트부스팅",
                 "neural_network": "신경망",
-            }.get(self.ml_model.get("type", ""), "ML")
+            }.get(model_type, "ML")
+
+            print(f"[DEBUG] 표시 이름: '{model_name}'")
             self.rig_ml_label.config(text=f"{val}% ({model_name})")
 
     def _update_rig_progress(self, percent: float, message: str):
