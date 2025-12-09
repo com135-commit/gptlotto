@@ -953,13 +953,17 @@ def train_ml_scorer(
     except ImportError:
         raise ImportError("[오류] scikit-learn 필요. pip install scikit-learn")
 
-    # Neural Network 모델 생성
+    # Neural Network 모델 생성 (최적화된 하이퍼파라미터 적용)
     mode_str = "랜덤성학습" if randomness_learning else "분류학습"
-    print(f"[ML 학습] 모델: 신경망 ({mode_str}, 50-30-10 layers)")
+    print(f"[ML 학습] 모델: 신경망 ({mode_str}, 100-80-60-40-20 layers, tanh)")
     sklearn_model = MLPClassifier(
-        hidden_layer_sizes=(50, 30, 10),
-        max_iter=200,
-        learning_rate_init=0.01,
+        hidden_layer_sizes=(100, 80, 60, 40, 20),  # 최적화: 5층 깊은 네트워크
+        activation='tanh',                          # 최적화: tanh 활성화 함수
+        solver='adam',
+        learning_rate_init=0.005,                   # 최적화: 0.01 → 0.005
+        alpha=0.0005,                               # 최적화: L2 정규화 강화
+        batch_size=200,                             # 최적화: 고정 배치 크기
+        max_iter=300,                               # 최적화: 200 → 300
         early_stopping=True,
         validation_fraction=0.1,
         random_state=42,
