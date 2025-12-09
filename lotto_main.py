@@ -100,7 +100,7 @@ class LottoApp(tk.Tk):
         self.rig_progressbar = None
         self.rig_progress_label = None
         self.rig_ml_label = None  # ML 가중치 레이블
-        self.rig_ml_weight = tk.IntVar(value=5)  # ML 가중치 변수 (과적합 방지: 30% → 5%)
+        self.rig_ml_weight = tk.IntVar(value=50)  # ML 가중치 변수 (최적화 후: 50%)
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
@@ -371,7 +371,7 @@ class LottoApp(tk.Tk):
             row=2, column=2, sticky="w"
         )
 
-        self.qc_balance = tk.IntVar(value=60)
+        self.qc_balance = tk.IntVar(value=50)
         self.scale_qc = tk.Scale(
             frm,
             from_=0,
@@ -383,8 +383,8 @@ class LottoApp(tk.Tk):
         )
         self.scale_qc.grid(row=3, column=0, columnspan=6, sticky="we", pady=(8, 0))
 
-        # ML 가중치 슬라이더 추가 (과적합 방지: 기본값 30% → 5%)
-        self.ml_weight = tk.IntVar(value=5)
+        # ML 가중치 슬라이더 추가 (최적화 후: 기본값 50%)
+        self.ml_weight = tk.IntVar(value=50)
         self.scale_ml = tk.Scale(
             frm,
             from_=0,
