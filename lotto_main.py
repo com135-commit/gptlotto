@@ -57,7 +57,7 @@ from lotto_simulation import (
     run_simulation,
     build_synthetic_player_pool,
     estimate_expected_winners_from_pool,
-    _rigged_candidate_chunk,
+    _filter_ticket_pool_chunk,
 )
 from lotto_physics import (
     get_physics_backend_info,
@@ -90,9 +90,9 @@ class LottoApp(tk.Tk):
         self.rig_status_label = None
         self.rig_target_min = tk.IntVar(value=8)
         self.rig_target_max = tk.IntVar(value=15)
-        self.rig_samples = tk.IntVar(value=20000)
-        # ★ 가상 플레이어 수 (사용자 지정, 기본 400,000명)
-        self.rig_virtual_players = tk.IntVar(value=400000)
+        # ★ 샘플링 제거: rig_samples 더 이상 사용 안 함 (ticket_pool 전수 조사)
+        # ★ 가상 플레이어 수 (실제 티켓 수와 일치, 기본 112,000,000)
+        self.rig_virtual_players = tk.IntVar(value=112000000)
         # ★ 가상 조작 시뮬 결과 저장용
         self.rig_results: list[tuple[list[int], float]] = []
         self.rig_last_params: dict = {}
@@ -100,7 +100,7 @@ class LottoApp(tk.Tk):
         self.rig_progressbar = None
         self.rig_progress_label = None
         self.rig_ml_label = None  # ML 가중치 레이블
-        self.rig_ml_weight = tk.IntVar(value=30)  # ML 가중치 변수
+        self.rig_ml_weight = tk.IntVar(value=5)  # ML 가중치 변수 (과적합 방지: 30% → 5%)
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
@@ -389,8 +389,8 @@ class LottoApp(tk.Tk):
         )
         self.scale_qc.grid(row=3, column=0, columnspan=6, sticky="we", pady=(8, 0))
 
-        # ML 가중치 슬라이더 추가
-        self.ml_weight = tk.IntVar(value=30)
+        # ML 가중치 슬라이더 추가 (과적합 방지: 기본값 30% → 5%)
+        self.ml_weight = tk.IntVar(value=5)
         self.scale_ml = tk.Scale(
             frm,
             from_=0,
@@ -1058,36 +1058,47 @@ class LottoApp(tk.Tk):
             row=0, column=3, sticky="w", padx=4
         )
 
-        ttk.Label(top, text="샘플링 후보 개수").grid(row=1, column=0, sticky="e", pady=4)
-        ttk.Entry(top, textvariable=self.rig_samples, width=10).grid(
-            row=1, column=1, sticky="w", padx=4
-        )
+        # ★ 샘플링 제거 - ticket_pool 전수 조사 방식으로 변경
+        # (샘플링 후보 개수 입력란 제거됨)
 
-        btn = ttk.Button(top, text="검색 실행", command=self._run_rigged_search)
-        btn.grid(row=1, column=2, columnspan=2, sticky="w", padx=6)
+        # 검색 실행/중지 버튼
+        btn_frame = ttk.Frame(top)
+        btn_frame.grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=4)
+
+        self.rig_start_btn = ttk.Button(btn_frame, text="검색 실행", command=self._run_rigged_search)
+        self.rig_start_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.rig_stop_btn = ttk.Button(btn_frame, text="중지", command=self._stop_rigged_search, state="disabled")
+        self.rig_stop_btn.pack(side=tk.LEFT)
+
+        # 중지 플래그
+        self.rig_stop_flag = False
 
         # ★ 추가: 현실 구매자 수 입력
         self.rig_buyers = tk.IntVar(value=14000000)
         ttk.Label(top, text="현실 구매자 수").grid(row=4, column=0, sticky="e", pady=4)
-        ttk.Entry(top, textvariable=self.rig_buyers, width=12).grid(
-            row=4, column=1, sticky="w", padx=4
-        )
+        buyers_entry = ttk.Entry(top, textvariable=self.rig_buyers, width=12)
+        buyers_entry.grid(row=4, column=1, sticky="w", padx=4)
         ttk.Label(top, text="(예: 14,000,000)").grid(row=4, column=2, sticky="w")
+
+        # 구매자 수 변경 시 가상 플레이어 수 자동 계산
+        self.rig_buyers.trace_add("write", self._auto_update_virtual_players)
 
         # ★ 추가: 1인당 평균 게임 수 입력
         self.rig_avg_games = tk.DoubleVar(value=8.0)
         ttk.Label(top, text="1인당 평균 게임 수").grid(row=5, column=0, sticky="e", pady=4)
-        ttk.Entry(top, textvariable=self.rig_avg_games, width=12).grid(
-            row=5, column=1, sticky="w", padx=4
-        )
+        games_entry = ttk.Entry(top, textvariable=self.rig_avg_games, width=12)
+        games_entry.grid(row=5, column=1, sticky="w", padx=4)
         ttk.Label(top, text="(예: 8 게임)").grid(row=5, column=2, sticky="w")
 
-        # ★ 가상 플레이어 수 입력
+        # 평균 게임 수 변경 시 가상 플레이어 수 자동 계산
+        self.rig_avg_games.trace_add("write", self._auto_update_virtual_players)
+
+        # ★ 가상 플레이어 수 입력 (자동 계산됨)
         ttk.Label(top, text="가상 플레이어 수").grid(row=2, column=0, sticky="e", pady=4)
-        ttk.Entry(top, textvariable=self.rig_virtual_players, width=12).grid(
-            row=2, column=1, sticky="w", padx=4
-        )
-        ttk.Label(top, text="(예: 400000)").grid(row=2, column=2, sticky="w")
+        vp_entry = ttk.Entry(top, textvariable=self.rig_virtual_players, width=12, state="readonly")
+        vp_entry.grid(row=2, column=1, sticky="w", padx=4)
+        ttk.Label(top, text="명 (자동: 구매자 × 게임 수)").grid(row=2, column=2, sticky="w")
 
         # ★ ML 가중치 슬라이더 (변수는 __init__에서 이미 초기화됨)
         ttk.Label(top, text="ML 가중치(%)").grid(row=3, column=0, sticky="e", pady=4)
@@ -1178,9 +1189,17 @@ class LottoApp(tk.Tk):
         try:
             # 결과 데이터 준비
             rows = []
-            for idx, (draw, lam) in enumerate(self.rig_results, start=1):
+            for idx, item in enumerate(self.rig_results, start=1):
+                # ML 사용 시: (draw, lam, combined_score)
+                # ML 미사용: (draw, lam)
+                if len(item) == 3:
+                    draw, lam, combined_score = item
+                else:
+                    draw, lam = item
+                    combined_score = None
+
                 sorted_draw = sorted(draw)
-                rows.append({
+                row_data = {
                     "순위": idx,
                     "번호1": sorted_draw[0],
                     "번호2": sorted_draw[1],
@@ -1190,7 +1209,13 @@ class LottoApp(tk.Tk):
                     "번호6": sorted_draw[5],
                     "번호조합": " ".join(map(str, sorted_draw)),
                     "예상_1등_인원(λ)": round(lam, 4),
-                })
+                }
+
+                # ML 점수가 있으면 추가
+                if combined_score is not None:
+                    row_data["ML_Combined_Score"] = round(combined_score, 6)
+
+                rows.append(row_data)
 
             df_results = pd.DataFrame(rows)
 
@@ -1246,6 +1271,12 @@ class LottoApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("오류", f"저장 중 오류 발생:\n{e}")
 
+    def _stop_rigged_search(self):
+        """가상 조작 시뮬 검색 중지"""
+        self.rig_stop_flag = True
+        self.rig_stop_btn.config(state="disabled")
+        self._update_rig_progress(0, "중지 중... (현재 작업 완료 대기)")
+
     def _run_rigged_search(self):
         if self.history_df is None or self.history_df.empty:
             messagebox.showwarning(
@@ -1253,10 +1284,17 @@ class LottoApp(tk.Tk):
             )
             return
 
+        # 중지 플래그 초기화
+        self.rig_stop_flag = False
+
+        # 버튼 상태 변경
+        self.rig_start_btn.config(state="disabled")
+        self.rig_stop_btn.config(state="normal")
+
         try:
             tmin = max(0, int(self.rig_target_min.get()))
             tmax = max(tmin, int(self.rig_target_max.get()))
-            samples = max(1000, int(self.rig_samples.get()))
+            # ★ 샘플링 제거: samples 변수 더 이상 사용 안 함
             sim_players_val = max(1, int(self.rig_virtual_players.get()))
         except Exception:
             messagebox.showerror("오류", "입력 값이 잘못되었습니다.")
@@ -1275,7 +1313,7 @@ class LottoApp(tk.Tk):
 
         if self.rig_status_label is not None:
             self.rig_status_label.config(
-                text=f"가상 플레이어 풀 구성 + 검색 중... (샘플 {samples:,}개, 가상 플레이어 {sim_players_val:,}명)"
+                text=f"가상 플레이어 풀 구성 + 전수 조사 중... (가상 플레이어 {sim_players_val:,}명)"
             )
 
         # 진행률 초기화
@@ -1318,15 +1356,30 @@ class LottoApp(tk.Tk):
             # 진행률 업데이트: 플레이어 풀 생성 시작
             self.after(0, lambda: self._update_rig_progress(10, "가상 플레이어 풀 생성 중..."))
 
+            # 진행률 콜백 함수 (안전 장치 포함)
+            def pool_progress_callback(percent, message):
+                try:
+                    self.after(0, lambda p=percent, m=message: self._update_rig_progress(p, m))
+                except:
+                    pass  # 위젯이 파괴된 경우 무시
+
             # 3) 가상 플레이어 풀 생성 (전구간 36코어 사용)
             ticket_pool = build_synthetic_player_pool(
                 sim_players,
                 local_w,
                 workers=36,   # 36 프로세스 풀
+                progress_callback=pool_progress_callback,
             )
 
-            # 진행률 업데이트: 플레이어 풀 생성 완료
-            self.after(0, lambda: self._update_rig_progress(30, "후보 번호 샘플링 중..."))
+            # ★ 중지 확인
+            if self.rig_stop_flag:
+                self.after(0, lambda: self._update_rig_progress(0, "중지됨"))
+                self.after(0, lambda: self.rig_start_btn.config(state="normal"))
+                self.after(0, lambda: self.rig_stop_btn.config(state="disabled"))
+                return
+
+            # 진행률 업데이트: ticket_pool 전수 조사 시작
+            self.after(0, lambda: self._update_rig_progress(30, "ticket_pool 전수 조사 중..."))
 
             # 4) 실제 전국 판매량 계산 (구매자수 × 평균게임수)
             buyers = int(self.rig_buyers.get())
@@ -1335,67 +1388,153 @@ class LottoApp(tk.Tk):
 
             scale_factor = REAL_TICKETS / float(sim_players)
 
-            # CPU 멀티프로세스 경로
+            print("=" * 70)
+            print("[DEBUG] 가상 조작 시뮬 파라미터:")
+            print(f"  구매자 수: {buyers:,}명")
+            print(f"  평균 게임 수: {avg_games}게임")
+            print(f"  실제 티켓 수: {REAL_TICKETS:,.0f}장")
+            print(f"  가상 플레이어 수: {sim_players:,}명")
+            print(f"  Scale Factor: {scale_factor:.4f}")
+            print(f"  목표 범위: {tmin}~{tmax}명")
+            print(f"  ticket_pool 크기: {len(ticket_pool):,}개 조합")
+            print("=" * 70)
+
+            # ticket_pool 샘플 5개 출력
+            print("\n[DEBUG] ticket_pool 샘플 (처음 5개):")
+            for i, (combo, count) in enumerate(list(ticket_pool.items())[:5]):
+                lam = count * scale_factor
+                in_range = "✅" if tmin <= lam <= tmax else "❌"
+                print(f"  {i+1}. {combo} → 구매자 {count}명, 예상 1등 {lam:.2f}명 {in_range}")
+            print()
+
+            # ★ 새로운 방식: ticket_pool 전수 조사 (멀티프로세싱)
+            # ML 가중치 읽기
+            ml_weight_val = self.rig_ml_weight.get() / 100.0
+            use_ml = self.ml_model is not None and ml_weight_val > 0 and self.history_df is not None
+
             xs: list[tuple[list[int], float]] = []
+            center = 0.5 * (tmin + tmax)
+
+            # ★ 동적 작업 할당: ticket_pool을 작은 청크로 많이 분할
+            # 빨리 끝난 워커가 다음 청크를 가져가도록 (work stealing)
+            ticket_items = list(ticket_pool.items())
+            total_combos = len(ticket_items)
             max_workers = 36
-            per_worker = samples // max_workers
-            remainder = samples % max_workers
+
+            # 청크 크기: 워커당 10개씩 주면 360개 청크 생성
+            # 빨리 끝난 워커가 다음 청크를 바로 가져감
+            chunk_size = max(1000, total_combos // (max_workers * 10))  # 최소 1000개
+
+            # 청크 리스트 생성
+            chunks = []
+            for i in range(0, total_combos, chunk_size):
+                chunks.append(ticket_items[i:i + chunk_size])
+
+            total_chunks = len(chunks)
 
             with ProcessPoolExecutor(max_workers=max_workers) as ex:
+                # 모든 청크를 한 번에 제출 (동적 할당)
                 futures = []
-                for i in range(max_workers):
-                    n_i = per_worker + (1 if i < remainder else 0)
-                    if n_i <= 0:
-                        continue
-                    # ML 가중치 읽기 (0-100 → 0.0-1.0)
-                    ml_weight_val = self.rig_ml_weight.get() / 100.0
-
+                for chunk in chunks:
                     futures.append(
                         ex.submit(
-                            _rigged_candidate_chunk,
-                            n_i,
-                            local_w,
-                            ticket_pool,
+                            _filter_ticket_pool_chunk,
+                            chunk,
                             scale_factor,
                             tmin,
                             tmax,
-                            self.ml_model,  # ML 모델 전달
-                            ml_weight_val,  # ML 가중치 (슬라이더 값)
-                            self.history_df,  # history_df 전달
+                            center,
+                            self.ml_model,
+                            ml_weight_val,
+                            local_w,
+                            self.history_df,
                         )
                     )
 
-                # 진행률 업데이트: 워커들 완료 추적
-                total_futures = len(futures)
-                completed_futures = 0
+                # 진행률 업데이트: 청크 완료 추적
+                completed_chunks = 0
+                processed_combos = 0
+
                 for fut in as_completed(futures):
+                    # ★ 중지 확인
+                    if self.rig_stop_flag:
+                        self.after(0, lambda: self._update_rig_progress(0, "중지됨"))
+                        self.after(0, lambda: self.rig_start_btn.config(state="normal"))
+                        self.after(0, lambda: self.rig_stop_btn.config(state="disabled"))
+                        return
+
                     part = fut.result()
                     if part:
                         xs.extend(part)
-                    completed_futures += 1
-                    progress_percent = 30 + int((completed_futures / total_futures) * 60)
-                    self.after(0, lambda p=progress_percent, c=completed_futures, t=total_futures:
-                              self._update_rig_progress(p, f"샘플링 진행 중... ({c}/{t} 워커 완료)"))
+                    completed_chunks += 1
+
+                    # 처리된 조합 수 계산
+                    processed_combos = min(completed_chunks * chunk_size, total_combos)
+
+                    progress_percent = 30 + int((completed_chunks / total_chunks) * 60)
+                    self.after(0, lambda p=progress_percent, cc=completed_chunks, tc=total_chunks, pc=processed_combos, ttc=total_combos:
+                              self._update_rig_progress(p, f"전수 조사 중... {cc}/{tc} 청크 ({pc:,}/{ttc:,} 조합)"))
 
             # 진행률 업데이트: 정렬 및 필터링 시작
-            self.after(0, lambda: self._update_rig_progress(90, "결과 정렬 및 필터링 중..."))
+            found_count = len(xs)
+            self.after(0, lambda fc=found_count: self._update_rig_progress(90, f"결과 정렬 중... (범위 내 {fc:,}개 발견)"))
 
             # 후보 정렬 및 상위 200개 선택
             if not xs:
                 rows = []
+                print("[DEBUG] xs가 비어있음! rows = []")
             else:
-                center = 0.5 * (tmin + tmax)
-                xs_sorted = sorted(xs, key=lambda d: abs(d[1] - center))
+                # ML 사용 시 combined_score로 정렬, 아니면 lam으로 정렬
+                if use_ml:
+                    # xs = [(combo, lam, combined_score), ...]
+                    # combined_score 높은 순
+                    print(f"[DEBUG] ML 사용 모드: xs 크기 = {len(xs)}")
+                    if xs:
+                        print(f"[DEBUG] xs 첫 항목: {xs[0]}")
+                    xs_sorted = sorted(xs, key=lambda d: d[2], reverse=True)
+                else:
+                    # xs = [(combo, lam), ...]
+                    # lam이 center에 가까운 순
+                    print(f"[DEBUG] ML 미사용 모드: xs 크기 = {len(xs)}")
+                    if xs:
+                        print(f"[DEBUG] xs 첫 항목: {xs[0]}")
+                    xs_sorted = sorted(xs, key=lambda d: abs(d[1] - center))
+
                 rows = xs_sorted[:200]
+                print(f"[DEBUG] 정렬 완료: rows 크기 = {len(rows)}")
+                if rows:
+                    print(f"[DEBUG] rows 첫 항목: {rows[0]}")
 
             # 진행률 업데이트: 완료
-            self.after(0, lambda: self._update_rig_progress(100, "완료"))
+            final_count = len(rows)
+            print(f"[DEBUG] found_count={found_count}, final_count={final_count}")
+            self.after(0, lambda fc=found_count, rc=final_count:
+                      self._update_rig_progress(100, f"완료! (총 {fc:,}개 중 상위 {rc}개 선택)"))
 
-            self.after(0, lambda r=rows, t1=tmin, t2=tmax, s=samples, sp=sim_players, b=buyers, ag=avg_games: self._update_rigged_tree(
+            # 샘플링 개수는 ticket_pool 크기로 표시
+            actual_samples = len(ticket_pool)
+            print(f"[DEBUG] _update_rigged_tree 호출 예정: rows 크기={len(rows)}, samples={actual_samples}")
+            self.after(0, lambda r=rows, t1=tmin, t2=tmax, s=actual_samples, sp=sim_players, b=buyers, ag=avg_games: self._update_rigged_tree(
                 r, t1, t2, s, sp, b, ag
             ))
 
+            # ★ 작업 완료: 버튼 상태 복원
+            self.after(0, lambda: self.rig_start_btn.config(state="normal"))
+            self.after(0, lambda: self.rig_stop_btn.config(state="disabled"))
+
         threading.Thread(target=task, daemon=True).start()
+
+    def _auto_update_virtual_players(self, *_args):
+        """현실 구매자 수 또는 평균 게임 수 변경 시 가상 플레이어 수 자동 계산"""
+        try:
+            buyers = int(self.rig_buyers.get())
+            avg_games = float(self.rig_avg_games.get())
+            # 가상 플레이어 수 = 구매자 수 × 평균 게임 수
+            virtual_players = int(buyers * avg_games)
+            self.rig_virtual_players.set(virtual_players)
+        except:
+            # 입력 중 오류 발생 시 무시
+            pass
 
     def _update_rig_ml_label(self):
         """가상 조작 시뮬 ML 가중치 레이블 업데이트"""
@@ -1423,10 +1562,17 @@ class LottoApp(tk.Tk):
 
     def _update_rig_progress(self, percent: float, message: str):
         """가상 조작 시뮬 진행률 업데이트"""
-        if self.rig_progressbar is not None:
-            self.rig_progressbar["value"] = percent
-        if self.rig_progress_label is not None:
-            self.rig_progress_label.config(text=message)
+        try:
+            if self.rig_progressbar is not None and self.rig_progressbar.winfo_exists():
+                self.rig_progressbar["value"] = percent
+        except:
+            pass  # 위젯이 파괴됨
+
+        try:
+            if self.rig_progress_label is not None and self.rig_progress_label.winfo_exists():
+                self.rig_progress_label.config(text=message)
+        except:
+            pass  # 위젯이 파괴됨
 
     def _update_rigged_tree(
         self,
@@ -1438,6 +1584,19 @@ class LottoApp(tk.Tk):
         buyers: int = 14000000,
         avg_games: float = 8.0,
     ):
+        # ★ 디버깅: 파라미터 출력
+        print("=" * 70)
+        print("[DEBUG] _update_rigged_tree 호출됨")
+        print(f"  rows 타입: {type(rows)}")
+        print(f"  rows 길이: {len(rows) if rows else 0}")
+        if rows:
+            print(f"  첫 번째 항목: {rows[0]}")
+            print(f"  첫 번째 항목 길이: {len(rows[0])}")
+        print(f"  tmin={tmin}, tmax={tmax}")
+        print(f"  samples={samples}, sim_players={sim_players}")
+        print(f"  self.rig_tree is None? {self.rig_tree is None}")
+        print("=" * 70)
+
         # ★ 결과 저장 (엑셀 저장용)
         self.rig_results = rows
         self.rig_last_params = {
@@ -1450,18 +1609,44 @@ class LottoApp(tk.Tk):
         }
 
         if self.rig_tree is None:
+            print("[ERROR] self.rig_tree is None!")
             return
-        self.rig_tree.delete(*self.rig_tree.get_children())
-        for idx, (draw, lam) in enumerate(rows, start=1):
-            self.rig_tree.insert(
-                "",
-                tk.END,
-                values=[
-                    idx,
-                    " ".join(map(str, sorted(draw))),
-                    f"{lam:5.2f}",
-                ],
-            )
+
+        try:
+            # 기존 항목 삭제
+            self.rig_tree.delete(*self.rig_tree.get_children())
+            print(f"[DEBUG] 기존 항목 삭제 완료")
+
+            # 새 항목 추가
+            for idx, item in enumerate(rows, start=1):
+                print(f"[DEBUG] 항목 {idx} 처리 중: {item}")
+
+                # ML 사용 시: (draw, lam, combined_score)
+                # ML 미사용: (draw, lam)
+                if len(item) == 3:
+                    draw, lam, combined_score = item
+                    print(f"  → ML 사용 결과: draw={draw}, lam={lam}, score={combined_score}")
+                else:
+                    draw, lam = item
+                    combined_score = None
+                    print(f"  → ML 미사용 결과: draw={draw}, lam={lam}")
+
+                self.rig_tree.insert(
+                    "",
+                    tk.END,
+                    values=[
+                        idx,
+                        " ".join(map(str, sorted(draw))),
+                        f"{lam:5.2f}",
+                    ],
+                )
+                print(f"  → Tree insert 성공!")
+
+            print(f"[DEBUG] 총 {len(rows)}개 항목 추가 완료")
+        except Exception as e:
+            print(f"[ERROR] Tree 업데이트 중 오류 발생: {e}")
+            import traceback
+            traceback.print_exc()
         if self.rig_status_label is not None:
             if not rows:
                 self.rig_status_label.config(

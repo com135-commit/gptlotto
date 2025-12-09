@@ -793,13 +793,15 @@ def train_ml_scorer(
                 n_jobs=-1,  # 모든 CPU 사용
             )
         elif model_type == "gradient_boosting":
-            print("[ML 학습] 모델: 그래디언트 부스팅 (100 estimators)")
+            print("[ML 학습] 모델: 그래디언트 부스팅 (과적합 방지 강화)")
             sklearn_model = GradientBoostingClassifier(
-                n_estimators=100,
-                learning_rate=0.1,
-                max_depth=5,
-                min_samples_split=5,
-                min_samples_leaf=2,
+                n_estimators=50,          # 100 → 50 (복잡도 감소)
+                learning_rate=0.05,       # 0.1 → 0.05 (학습률 감소)
+                max_depth=3,              # 5 → 3 (깊이 제한 강화)
+                min_samples_split=10,     # 5 → 10 (분할 어렵게)
+                min_samples_leaf=5,       # 2 → 5 (리프 크기 증가)
+                subsample=0.8,            # 배깅 추가
+                max_features='sqrt',      # 특징 샘플링 추가
                 random_state=42,
             )
         else:  # neural_network
@@ -817,18 +819,33 @@ def train_ml_scorer(
         print(f"[ML 학습] 샘플: {N}개, 특징: {D}개")
         sklearn_model.fit(Xn, y)
 
-        # 교차 검증
-        cv_scores = cross_val_score(sklearn_model, Xn, y, cv=5)
+        # 교차 검증 (Stratified K-Fold)
+        from sklearn.model_selection import StratifiedKFold
+        skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+        cv_scores = cross_val_score(sklearn_model, Xn, y, cv=skf)
         train_acc = sklearn_model.score(Xn, y)
 
         print(f"[ML 학습 완료] 훈련 정확도: {train_acc:.2%}")
         print(f"[교차 검증] 평균: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})")
+
+        # 과적합 탐지
+        overfitting_gap = train_acc - cv_scores.mean()
+        if overfitting_gap > 0.10:
+            print(f"[⚠️  경고] 과적합 의심! (Gap: {overfitting_gap:.2%})")
+            print(f"         ml_weight를 낮추거나 모델을 단순화하세요")
+        elif overfitting_gap > 0.05:
+            print(f"[주의] 약간의 과적합 (Gap: {overfitting_gap:.2%})")
 
         # 특징 중요도 (랜덤 포레스트, 그래디언트 부스팅만)
         if hasattr(sklearn_model, 'feature_importances_'):
             importances = sklearn_model.feature_importances_
             top_features = np.argsort(importances)[-5:][::-1]
             print(f"[특징 중요도] 상위 5개: {top_features.tolist()}")
+
+            # 특징 집중도 체크
+            max_importance = importances.max()
+            if max_importance > 0.3:
+                print(f"[⚠️  경고] 한 특징이 {max_importance:.1%} 비중 - 과적합 위험!")
 
         model = {
             "type": model_type,
