@@ -81,8 +81,8 @@ class LottoApp(tk.Tk):
 
         # ★ AI 세트 평점 학습 회차 수 (GUI)
         self.ai_max_rounds = tk.StringVar(value="200")
-        # ★ ML 모델 타입 (랜덤성 스코어러 기본값)
-        self.ml_model_type = tk.StringVar(value="randomness")
+        # ★ ML 모델 타입
+        self.ml_model_type = tk.StringVar(value="logistic")
 
         # 가상 조작 시뮬 관련 상태
         self.rig_win = None
@@ -271,7 +271,6 @@ class LottoApp(tk.Tk):
             hist,
             textvariable=self.ml_model_type,
             values=[
-                "randomness",
                 "logistic",
                 "random_forest",
                 "gradient_boosting",
@@ -290,7 +289,6 @@ class LottoApp(tk.Tk):
         def update_model_desc(*_):
             model = self.ml_model_type.get()
             descriptions = {
-                "randomness": "랜덤성 스코어러 (권장, 편향없음, 빠름)",
                 "logistic": "로지스틱 회귀 (기본, 빠름)",
                 "random_forest": "랜덤 포레스트 (강력, 느림)",
                 "gradient_boosting": "그래디언트 부스팅 (정확, 느림)",
