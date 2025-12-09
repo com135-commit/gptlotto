@@ -15,6 +15,106 @@ from lotto_utils import get_rng
 # 전역 랜덤 생성기 사용
 _rng = get_rng()
 
+
+# ------------------ 편향된 조합 생성 (랜덤성 학습용) ------------------
+def generate_biased_combinations(n_sets: int) -> list[list[int]]:
+    """
+    명백히 편향된(비무작위적) 번호 조합 생성
+    ML 모델이 "무작위성"을 학습하기 위한 음성 샘플로 사용
+
+    편향 유형:
+    1. 모두 짝수/홀수
+    2. 연속 번호
+    3. 한쪽 범위에 몰림 (저수/중수/고수만)
+    4. 같은 끝자리
+    5. 등차수열
+    6. 배수만 (3의 배수, 5의 배수)
+    7. 극단적 범위 조합
+    """
+    biased_sets = []
+
+    # 각 편향 유형별로 생성
+    types_per_category = max(1, n_sets // 10)
+
+    # 1. 모두 짝수
+    evens = [n for n in range(2, 46, 2)]  # 2, 4, 6, ..., 44
+    for _ in range(types_per_category):
+        biased_sets.append(sorted(_rng.choice(evens, size=6, replace=False).tolist()))
+
+    # 2. 모두 홀수
+    odds = [n for n in range(1, 46, 2)]  # 1, 3, 5, ..., 45
+    for _ in range(types_per_category):
+        biased_sets.append(sorted(_rng.choice(odds, size=6, replace=False).tolist()))
+
+    # 3. 연속 번호 (6개 연속)
+    for _ in range(types_per_category):
+        start = _rng.integers(1, 40)  # 1-39
+        biased_sets.append(list(range(start, start + 6)))
+
+    # 4. 모두 저수 (1-15)
+    low_nums = list(range(1, 16))
+    for _ in range(types_per_category):
+        biased_sets.append(sorted(_rng.choice(low_nums, size=6, replace=False).tolist()))
+
+    # 5. 모두 고수 (31-45)
+    high_nums = list(range(31, 46))
+    for _ in range(types_per_category):
+        biased_sets.append(sorted(_rng.choice(high_nums, size=6, replace=False).tolist()))
+
+    # 6. 같은 끝자리 (예: 1, 11, 21, 31, 41, ...)
+    for _ in range(types_per_category):
+        last_digit = _rng.integers(0, 10)  # 0-9
+        candidates = [n for n in range(1, 46) if n % 10 == last_digit]
+        if len(candidates) >= 6:
+            biased_sets.append(sorted(_rng.choice(candidates, size=6, replace=False).tolist()))
+
+    # 7. 등차수열 (공차 5)
+    for _ in range(types_per_category):
+        start = _rng.integers(1, 15)
+        diff = _rng.integers(3, 8)  # 공차 3-7
+        seq = [start + i * diff for i in range(6)]
+        if all(1 <= n <= 45 for n in seq):
+            biased_sets.append(sorted(seq))
+
+    # 8. 3의 배수만
+    mult3 = [n for n in range(3, 46, 3)]  # 3, 6, 9, ..., 45
+    for _ in range(types_per_category):
+        if len(mult3) >= 6:
+            biased_sets.append(sorted(_rng.choice(mult3, size=6, replace=False).tolist()))
+
+    # 9. 5의 배수만
+    mult5 = [n for n in range(5, 46, 5)]  # 5, 10, 15, ..., 45
+    for _ in range(types_per_category):
+        if len(mult5) >= 6:
+            biased_sets.append(sorted(_rng.choice(mult5, size=6, replace=False).tolist()))
+
+    # 10. 극단적 범위 (처음 3개 + 마지막 3개)
+    for _ in range(types_per_category):
+        low_3 = _rng.choice(range(1, 8), size=3, replace=False).tolist()
+        high_3 = _rng.choice(range(38, 46), size=3, replace=False).tolist()
+        biased_sets.append(sorted(low_3 + high_3))
+
+    # n_sets 개수에 맞춰 조정
+    if len(biased_sets) < n_sets:
+        # 부족하면 추가 생성 (랜덤하게 위 유형 반복)
+        while len(biased_sets) < n_sets:
+            type_choice = _rng.integers(0, 10)
+            if type_choice == 0:
+                biased_sets.append(sorted(_rng.choice(evens, size=6, replace=False).tolist()))
+            elif type_choice == 1:
+                biased_sets.append(sorted(_rng.choice(odds, size=6, replace=False).tolist()))
+            elif type_choice == 2:
+                start = _rng.integers(1, 40)
+                biased_sets.append(list(range(start, start + 6)))
+            elif type_choice == 3:
+                biased_sets.append(sorted(_rng.choice(low_nums, size=6, replace=False).tolist()))
+            elif type_choice == 4:
+                biased_sets.append(sorted(_rng.choice(high_nums, size=6, replace=False).tolist()))
+            # 나머지 유형도 유사하게 추가
+
+    # n_sets 개수만큼 반환
+    return biased_sets[:n_sets]
+
 # ------------------ 기본/패턴 생성기 ------------------
 def generate_random_sets(
     n_sets: int,
@@ -611,6 +711,7 @@ def train_ml_scorer(
     lr: float = 0.05,
     use_hard_negatives: bool = True,
     model_type: str = "logistic",  # "logistic", "random_forest", "gradient_boosting", "neural_network"
+    randomness_learning: bool = True,  # 랜덤성 학습 모드
 ) -> dict:
     """
     AI 세트 평점 학습 (개선된 버전)
@@ -623,6 +724,8 @@ def train_ml_scorer(
         epochs: 학습 반복 횟수 (60→120 증가)
         lr: 학습률 (0.1→0.05 감소로 안정화)
         use_hard_negatives: 하드 네거티브 샘플링 사용 여부
+        randomness_learning: True면 "무작위성" 학습 (양성=당첨번호, 음성=편향조합)
+                            False면 기존 방식 (양성=당첨번호, 음성=랜덤조합)
 
     Returns:
         학습된 모델 dict (w, b, mu, sigma)
@@ -654,7 +757,11 @@ def train_ml_scorer(
     # 음성 샘플 생성
     n_neg = len(pos_sets) * n_neg_per_pos
 
-    if use_hard_negatives:
+    if randomness_learning:
+        # 랜덤성 학습 모드: 편향된 조합을 음성 샘플로 사용
+        print(f"[ML 학습] 랜덤성 학습 모드 - 음성 샘플: 편향된 조합")
+        neg_sets = generate_biased_combinations(n_neg)
+    elif use_hard_negatives:
         # 하드 네거티브 샘플링: 50% 랜덤 + 50% 변형
         n_random = n_neg // 2
         n_mutated = n_neg - n_random
@@ -709,7 +816,11 @@ def train_ml_scorer(
     patience_counter = 0
 
     print(f"[ML 학습] 샘플: {N}개 (양성: {len(pos_sets)}, 음성: {len(neg_sets)}), 특징: {D}개")
-    print(f"[ML 학습] Epochs: {epochs}, LR: {lr}, 하드네거티브: {use_hard_negatives}")
+    if randomness_learning:
+        print(f"[ML 학습] 모드: 랜덤성 학습 (양성=진짜무작위, 음성=편향조합)")
+    else:
+        print(f"[ML 학습] 모드: 분류 학습 (하드네거티브: {use_hard_negatives})")
+    print(f"[ML 학습] Epochs: {epochs}, LR: {lr}")
 
     for epoch in range(epochs):
         # Forward pass
@@ -782,8 +893,9 @@ def train_ml_scorer(
             }
 
         # sklearn 모델 생성
+        mode_str = "랜덤성학습" if randomness_learning else "분류학습"
         if model_type == "random_forest":
-            print("[ML 학습] 모델: 랜덤 포레스트 (200 trees)")
+            print(f"[ML 학습] 모델: 랜덤 포레스트 ({mode_str}, 200 trees)")
             sklearn_model = RandomForestClassifier(
                 n_estimators=200,
                 max_depth=10,
@@ -793,7 +905,7 @@ def train_ml_scorer(
                 n_jobs=-1,  # 모든 CPU 사용
             )
         elif model_type == "gradient_boosting":
-            print("[ML 학습] 모델: 그래디언트 부스팅 (과적합 방지 강화)")
+            print(f"[ML 학습] 모델: 그래디언트 부스팅 ({mode_str}, 과적합 방지 강화)")
             sklearn_model = GradientBoostingClassifier(
                 n_estimators=50,          # 100 → 50 (복잡도 감소)
                 learning_rate=0.05,       # 0.1 → 0.05 (학습률 감소)
@@ -805,7 +917,7 @@ def train_ml_scorer(
                 random_state=42,
             )
         else:  # neural_network
-            print("[ML 학습] 모델: 신경망 (50-30-10 layers)")
+            print(f"[ML 학습] 모델: 신경망 ({mode_str}, 50-30-10 layers)")
             sklearn_model = MLPClassifier(
                 hidden_layer_sizes=(50, 30, 10),
                 max_iter=200,
