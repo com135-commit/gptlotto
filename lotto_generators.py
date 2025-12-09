@@ -12,6 +12,20 @@ import numpy as np
 import pandas as pd
 from lotto_utils import get_rng
 
+# 고도화 고전 알고리즘 import
+from lotto_advanced_classical import (
+    gen_hot_cold_balanced,
+    gen_consecutive_controlled,
+    gen_sum_range_controlled,
+    gen_zone_balanced,
+    gen_last_digit_diverse,
+    gen_prime_mixed,
+    gen_temporal_strategy,
+    gen_frequency_inverted,
+    gen_cycle_pattern,
+    gen_ml_guided,
+)
+
 # 전역 랜덤 생성기 사용
 _rng = get_rng()
 
@@ -1531,6 +1545,65 @@ def gen_MQLE(
             cands.append((generate_random_sets(1, True, weights, exclude_set)[0], "classical"))
         except Exception:
             pass
+
+        # ========== 고도화 고전 알고리즘 10개 추가 ==========
+
+        # 통계적 알고리즘 (3개)
+        if history_df is not None and history_df.empty is False:
+            try:
+                cands.append((gen_hot_cold_balanced(history_df, weights, exclude_set), "classical"))
+            except Exception:
+                pass
+
+        try:
+            cands.append((gen_consecutive_controlled(weights, exclude_set), "classical"))
+        except Exception:
+            pass
+
+        try:
+            cands.append((gen_sum_range_controlled(weights, exclude_set), "classical"))
+        except Exception:
+            pass
+
+        # 조합론적 알고리즘 (3개)
+        try:
+            cands.append((gen_zone_balanced(weights, exclude_set), "classical"))
+        except Exception:
+            pass
+
+        try:
+            cands.append((gen_last_digit_diverse(weights, exclude_set), "classical"))
+        except Exception:
+            pass
+
+        try:
+            cands.append((gen_prime_mixed(weights, exclude_set), "classical"))
+        except Exception:
+            pass
+
+        # 히스토리 분석 기반 (4개)
+        if history_df is not None and history_df.empty is False:
+            try:
+                cands.append((gen_temporal_strategy(history_df, weights, exclude_set), "classical"))
+            except Exception:
+                pass
+
+            try:
+                cands.append((gen_frequency_inverted(history_df, weights, exclude_set), "classical"))
+            except Exception:
+                pass
+
+            try:
+                cands.append((gen_cycle_pattern(history_df, weights, exclude_set), "classical"))
+            except Exception:
+                pass
+
+            # ML 가이드 (ml_model이 있을 때만)
+            if ml_model is not None:
+                try:
+                    cands.append((gen_ml_guided(ml_model, history_df, weights, exclude_set), "classical"))
+                except Exception:
+                    pass
 
         if not cands:
             cands.append((generate_random_sets(1, True, weights, exclude_set)[0], "classical"))
