@@ -649,7 +649,7 @@ class LottoApp(tk.Tk):
                 )
             elif mode == "MQLE(끝판왕)":
                 # MQLE도 백그라운드 스레드에서 실행 (GUI 멈춤 방지)
-                self._run_mqle_in_background(mode, n, weights)
+                self._run_mqle_in_background(mode, n, weights, excl_set)
                 return  # 백그라운드에서 처리하므로 여기서 리턴
             elif mode in ("물리시뮬3D", "물리시뮬3D+MQLE(끝판왕)"):
                 # 물리시뮬은 백그라운드 스레드에서 실행 (GUI 멈춤 방지)
@@ -664,7 +664,7 @@ class LottoApp(tk.Tk):
         self.text_generate.delete("1.0", tk.END)
         self.text_generate.insert("1.0", sets_to_text(arr))
 
-    def _run_mqle_in_background(self, mode: str, n: int, weights):
+    def _run_mqle_in_background(self, mode: str, n: int, weights, excl_set: set[int]):
         """MQLE를 백그라운드 스레드에서 실행"""
         # MQLE 모드는 CSV 필수
         if self.history_df is None:
@@ -691,16 +691,6 @@ class LottoApp(tk.Tk):
                         base_sets = parse_sets_from_text(txt)
                     except Exception:
                         base_sets = None
-
-                # 제외 세트 읽기
-                excl_set = None
-                ex_text = self.text_exclude.get("1.0", tk.END)
-                if ex_text.strip():
-                    try:
-                        excl_list = [int(x) for x in ex_text.split() if x.isdigit()]
-                        excl_set = set(v for v in excl_list if 1 <= v <= 45)
-                    except Exception:
-                        excl_set = None
 
                 # MQLE 실행
                 q_bal = self.qc_balance.get() / 100.0
