@@ -5,12 +5,14 @@
 - 기본/패턴 생성기
 - 천재(GI), MDA, CC, PR, IS 알고리즘
 - GAP-R, QH, HD, QP 계열, MQLE 등
+- 랜덤성 스코어러 (One-Class Learning)
 """
 
 from __future__ import annotations
 import numpy as np
 import pandas as pd
 from lotto_utils import get_rng
+from lotto_randomness_scorer import train_randomness_scorer, score_randomness
 
 # 전역 랜덤 생성기 사용
 _rng = get_rng()
@@ -610,7 +612,7 @@ def train_ml_scorer(
     epochs: int = 120,
     lr: float = 0.05,
     use_hard_negatives: bool = True,
-    model_type: str = "logistic",  # "logistic", "random_forest", "gradient_boosting", "neural_network"
+    model_type: str = "logistic",  # "logistic", "random_forest", "gradient_boosting", "neural_network", "randomness"
 ) -> dict:
     """
     AI 세트 평점 학습 (개선된 버전)
@@ -629,6 +631,10 @@ def train_ml_scorer(
     """
     if history_df is None or history_df.empty:
         raise ValueError("히스토리 없음: ML 학습 불가")
+
+    # 랜덤성 스코어러 분기 (One-Class Learning)
+    if model_type == "randomness":
+        return train_randomness_scorer(history_df, max_rounds=max_rounds)
 
     if max_rounds is None or max_rounds <= 0:
         df = history_df
@@ -876,9 +882,15 @@ def ml_score_set(
     - random_forest: 랜덤 포레스트
     - gradient_boosting: 그래디언트 부스팅
     - neural_network: 신경망
+    - randomness: 랜덤성 스코어러 (One-Class)
     """
     if model is None:
         return 0.0
+
+    # 랜덤성 스코어러 분기
+    model_type = model.get("type", "logistic")
+    if model_type == "randomness_scorer":
+        return score_randomness(nums, model)
 
     # 특징 추출
     feats = _set_features(nums, weights, history_df)
