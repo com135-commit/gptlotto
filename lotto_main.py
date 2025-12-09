@@ -81,8 +81,8 @@ class LottoApp(tk.Tk):
 
         # ★ AI 세트 평점 학습 회차 수 (GUI)
         self.ai_max_rounds = tk.StringVar(value="200")
-        # ★ ML 모델 타입
-        self.ml_model_type = tk.StringVar(value="logistic")
+        # ★ ML 모델 타입 (Neural Network 고정)
+        self.ml_model_type = tk.StringVar(value="neural_network")
 
         # 가상 조작 시뮬 관련 상태
         self.rig_win = None
@@ -263,17 +263,14 @@ class LottoApp(tk.Tk):
         self.ai_rounds_slider.trace_add("write", update_ai_rounds)
         update_ai_rounds()  # 초기값 설정
 
-        # ML 모델 타입 선택
-        ttk.Label(hist, text="ML 모델 타입:").grid(
+        # ML 모델 타입 선택 (Neural Network 고정)
+        ttk.Label(hist, text="ML 모델:").grid(
             row=3, column=0, sticky="e", pady=(4, 2)
         )
         model_combo = ttk.Combobox(
             hist,
             textvariable=self.ml_model_type,
             values=[
-                "logistic",
-                "random_forest",
-                "gradient_boosting",
                 "neural_network",
             ],
             state="readonly",
@@ -282,17 +279,14 @@ class LottoApp(tk.Tk):
         model_combo.grid(row=3, column=1, sticky="w", padx=6, pady=(4, 2))
 
         # 모델 설명 레이블
-        self.ml_type_desc = ttk.Label(hist, text="로지스틱 회귀 (기본, 빠름)")
+        self.ml_type_desc = ttk.Label(hist, text="신경망 (최적화됨, 5층 100-80-60-40-20)")
         self.ml_type_desc.grid(row=3, column=2, sticky="w", padx=4)
 
         # 모델 타입 변경 시 설명 업데이트
         def update_model_desc(*_):
             model = self.ml_model_type.get()
             descriptions = {
-                "logistic": "로지스틱 회귀 (기본, 빠름)",
-                "random_forest": "랜덤 포레스트 (강력, 느림)",
-                "gradient_boosting": "그래디언트 부스팅 (정확, 느림)",
-                "neural_network": "신경망 (고급, 매우 느림)",
+                "neural_network": "신경망 (최적화됨, 5층 100-80-60-40-20)",
             }
             self.ml_type_desc.config(text=descriptions.get(model, ""))
         self.ml_model_type.trace_add("write", update_model_desc)
@@ -506,11 +500,8 @@ class LottoApp(tk.Tk):
                 used_rounds = min(len(self.history_df), max_rounds)
 
             model_name = {
-                "logistic": "로지스틱",
-                "random_forest": "랜덤포레스트",
-                "gradient_boosting": "그래디언트부스팅",
                 "neural_network": "신경망",
-            }.get(model_type, "ML")
+            }.get(model_type, "신경망")
 
             # 메인 스레드에서 UI 업데이트
             self.after(0, lambda: self._on_ml_training_success(
@@ -1551,11 +1542,8 @@ class LottoApp(tk.Tk):
             print(f"[DEBUG] ML 모델 전체: {list(self.ml_model.keys())}")
 
             model_name = {
-                "logistic": "로지스틱",
-                "random_forest": "랜덤포레스트",
-                "gradient_boosting": "그래디언트부스팅",
                 "neural_network": "신경망",
-            }.get(model_type, "ML")
+            }.get(model_type, "신경망")
 
             print(f"[DEBUG] 표시 이름: '{model_name}'")
             self.rig_ml_label.config(text=f"{val}% ({model_name})")
