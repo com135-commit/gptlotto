@@ -26,8 +26,8 @@ history_df = load_history_csv("lotto.csv")
 history_weights = compute_realistic_popularity_weights(history_df)
 print(f"   과거 당첨 번호: {len(history_df)}회")
 
-# 2. 각 모델 타입별로 랜덤성 학습 테스트
-model_types = ["logistic", "random_forest", "gradient_boosting", "neural_network"]
+# 2. Neural Network 랜덤성 학습 테스트
+model_types = ["neural_network"]  # Neural Network만 사용
 
 for model_type in model_types:
     print("\n" + "=" * 70)

@@ -94,23 +94,105 @@ def generate_biased_combinations(n_sets: int) -> list[list[int]]:
         high_3 = _rng.choice(range(38, 46), size=3, replace=False).tolist()
         biased_sets.append(sorted(low_3 + high_3))
 
+    # ===== 미묘한 편향 (사람이 실제로 선택할 법한 패턴) =====
+
+    # 11. 짝수 4개 + 홀수 2개 (완전 짝수보다 미묘함)
+    for _ in range(types_per_category):
+        even_4 = _rng.choice(evens, size=4, replace=False).tolist()
+        odd_2 = _rng.choice(odds, size=2, replace=False).tolist()
+        biased_sets.append(sorted(even_4 + odd_2))
+
+    # 12. 생일 번호 (1-31만, 많은 사람이 생일로 선택)
+    birthday_nums = list(range(1, 32))
+    for _ in range(types_per_category):
+        biased_sets.append(sorted(_rng.choice(birthday_nums, size=6, replace=False).tolist()))
+
+    # 13. 저수 4개 + 고수 2개 (한쪽에 치우침)
+    for _ in range(types_per_category):
+        low_4 = _rng.choice(low_nums, size=4, replace=False).tolist()
+        high_2 = _rng.choice(high_nums, size=2, replace=False).tolist()
+        biased_sets.append(sorted(low_4 + high_2))
+
+    # 14. 연속 2-3개 포함 (자동차 번호판 패턴)
+    for _ in range(types_per_category):
+        start = _rng.integers(1, 43)
+        consecutive = list(range(start, start + 3))
+        # 나머지 3개는 랜덤
+        remaining = [n for n in range(1, 46) if n not in consecutive]
+        others = _rng.choice(remaining, size=3, replace=False).tolist()
+        biased_sets.append(sorted(consecutive + others))
+
+    # 15. 같은 숫자 2개 (전화번호 끝자리 패턴)
+    for _ in range(types_per_category):
+        same_last = _rng.integers(0, 10)
+        candidates = [n for n in range(1, 46) if n % 10 == same_last]
+        if len(candidates) >= 2:
+            same_2 = _rng.choice(candidates, size=2, replace=False).tolist()
+            remaining = [n for n in range(1, 46) if n not in same_2]
+            others = _rng.choice(remaining, size=4, replace=False).tolist()
+            biased_sets.append(sorted(same_2 + others))
+
+    # 16. 행운의 숫자 포함 (3, 7, 8, 9 중 3개 이상)
+    lucky_nums = [3, 7, 8, 9, 13, 21, 27, 33]
+    for _ in range(types_per_category):
+        lucky_3 = _rng.choice(lucky_nums, size=min(3, len(lucky_nums)), replace=False).tolist()
+        remaining = [n for n in range(1, 46) if n not in lucky_3]
+        others = _rng.choice(remaining, size=6-len(lucky_3), replace=False).tolist()
+        biased_sets.append(sorted(lucky_3 + others))
+
+    # 17. 대칭 패턴 (예: 1,2,44,45 + 중간 2개)
+    for _ in range(types_per_category):
+        edge_4 = [1, 2, 44, 45]
+        middle = _rng.choice(range(20, 26), size=2, replace=False).tolist()
+        biased_sets.append(sorted(edge_4 + middle))
+
+    # 18. 피보나치 수열 일부 (1,2,3,5,8,13,21,34)
+    fib_nums = [1, 2, 3, 5, 8, 13, 21, 34]
+    for _ in range(types_per_category):
+        if len(fib_nums) >= 6:
+            biased_sets.append(sorted(_rng.choice(fib_nums, size=6, replace=False).tolist()))
+
+    # 19. 제곱수 선호 (1,4,9,16,25,36)
+    square_nums = [1, 4, 9, 16, 25, 36]
+    for _ in range(types_per_category):
+        if len(square_nums) >= 4:
+            square_4 = _rng.choice(square_nums, size=4, replace=False).tolist()
+            remaining = [n for n in range(1, 46) if n not in square_4]
+            others = _rng.choice(remaining, size=2, replace=False).tolist()
+            biased_sets.append(sorted(square_4 + others))
+
+    # 20. 소수만 (2,3,5,7,11,13,17,19,23,29,31,37,41,43)
+    def is_prime(n):
+        if n < 2: return False
+        if n == 2: return True
+        if n % 2 == 0: return False
+        for i in range(3, int(n**0.5) + 1, 2):
+            if n % i == 0: return False
+        return True
+    prime_nums = [n for n in range(2, 46) if is_prime(n)]
+    for _ in range(types_per_category):
+        if len(prime_nums) >= 6:
+            biased_sets.append(sorted(_rng.choice(prime_nums, size=6, replace=False).tolist()))
+
     # n_sets 개수에 맞춰 조정
     if len(biased_sets) < n_sets:
-        # 부족하면 추가 생성 (랜덤하게 위 유형 반복)
+        # 부족하면 추가 생성 (20가지 유형 반복)
         while len(biased_sets) < n_sets:
-            type_choice = _rng.integers(0, 10)
+            type_choice = _rng.integers(0, 20)
             if type_choice == 0:
                 biased_sets.append(sorted(_rng.choice(evens, size=6, replace=False).tolist()))
             elif type_choice == 1:
                 biased_sets.append(sorted(_rng.choice(odds, size=6, replace=False).tolist()))
-            elif type_choice == 2:
+            elif type_choice == 11:
+                even_4 = _rng.choice(evens, size=4, replace=False).tolist()
+                odd_2 = _rng.choice(odds, size=2, replace=False).tolist()
+                biased_sets.append(sorted(even_4 + odd_2))
+            elif type_choice == 12:
+                biased_sets.append(sorted(_rng.choice(birthday_nums, size=6, replace=False).tolist()))
+            else:
+                # 기본적으로 명백한 편향 중 하나
                 start = _rng.integers(1, 40)
                 biased_sets.append(list(range(start, start + 6)))
-            elif type_choice == 3:
-                biased_sets.append(sorted(_rng.choice(low_nums, size=6, replace=False).tolist()))
-            elif type_choice == 4:
-                biased_sets.append(sorted(_rng.choice(high_nums, size=6, replace=False).tolist()))
-            # 나머지 유형도 유사하게 추가
 
     # n_sets 개수만큼 반환
     return biased_sets[:n_sets]
@@ -663,7 +745,53 @@ def _set_features(
     # 고차원 특징 (1개)
     f_sum_last_digit = (sum(nums) % 10) / 10.0
 
-    # ===== 특징 벡터 구성 (20개 - 편향 특징 제거) =====
+    # ===== 무작위성 특징 (5개 추가) =====
+
+    # 1. 숫자 엔트로피 (Entropy) - 숫자 분포의 다양성
+    unique_tens = len(set(n // 10 for n in nums))  # 십의 자리 다양성 (0-4)
+    unique_ones = len(set(n % 10 for n in nums))   # 일의 자리 다양성 (0-9)
+    f_entropy = (unique_tens / 5.0 + unique_ones / 10.0) / 2.0
+
+    # 2. 카이제곱 균등성 (Chi-Square Uniformity) - 번호가 전체 범위에 고르게 분포하는지
+    # 1-45를 3개 구간으로 나눔: 1-15, 16-30, 31-45
+    observed = np.array([low * 6, mid * 6, high * 6])  # 실제 개수
+    expected = np.array([2.0, 2.0, 2.0])  # 기대 개수 (6개/3구간=2개)
+    chi2 = np.sum((observed - expected) ** 2 / (expected + 0.01))
+    f_chi2_uniformity = 1.0 / (1.0 + chi2 / 5.0)  # 0-1 정규화 (낮을수록 균등)
+
+    # 3. 런 테스트 (Runs Test) - 순서의 무작위성
+    # 중앙값(23)보다 큰/작은 것으로 이진화
+    binary = [1 if n > 23 else 0 for n in nums]
+    runs = 1
+    for i in range(1, len(binary)):
+        if binary[i] != binary[i-1]:
+            runs += 1
+    # 무작위라면 runs는 3-4개 정도 (최소 1, 최대 6)
+    expected_runs = 3.5
+    f_runs = 1.0 - min(1.0, abs(runs - expected_runs) / 3.5)
+
+    # 4. 자기상관 (Autocorrelation) - 간격의 규칙성
+    if len(gaps) > 1:
+        # 간격의 표준편차가 클수록 무작위적
+        f_autocorr = min(1.0, gaps.std() / 10.0)
+    else:
+        f_autocorr = 0.0
+
+    # 5. 비트 엔트로피 (Bit Entropy) - 2진수 표현의 균형
+    # 모든 숫자를 6비트로 표현하여 0과 1의 개수 비교
+    all_bits = []
+    for n in nums:
+        bits = format(n, '06b')  # 6비트 표현 (0-63)
+        all_bits.extend([int(b) for b in bits])
+    ones = sum(all_bits)
+    zeros = len(all_bits) - ones
+    # 50:50에 가까울수록 1.0
+    if max(ones, zeros) > 0:
+        f_bit_entropy = min(ones, zeros) / max(ones, zeros)
+    else:
+        f_bit_entropy = 0.0
+
+    # ===== 특징 벡터 구성 (25개 - 무작위성 특징 추가) =====
     # 제거된 특징 (큰 번호 편향):
     # - f_mean: 큰 번호에 유리
     # - f_max: 45번에 유리
@@ -696,6 +824,9 @@ def _set_features(
 
             # 고차원 1개 - 중립적
             f_sum_last_digit,
+
+            # 무작위성 특징 5개 - 무작위성 측정
+            f_entropy, f_chi2_uniformity, f_runs, f_autocorr, f_bit_entropy,
         ],
         dtype=float,
     )
@@ -710,25 +841,26 @@ def train_ml_scorer(
     epochs: int = 120,
     lr: float = 0.05,
     use_hard_negatives: bool = True,
-    model_type: str = "logistic",  # "logistic", "random_forest", "gradient_boosting", "neural_network"
+    model_type: str = "neural_network",  # 고정: Neural Network만 사용
     randomness_learning: bool = True,  # 랜덤성 학습 모드
 ) -> dict:
     """
-    AI 세트 평점 학습 (개선된 버전)
+    AI 세트 평점 학습 - Neural Network만 사용 (최고 성능)
 
     Parameters:
         history_df: 과거 당첨 번호 데이터프레임
         weights: 번호 가중치 (45개)
         n_neg_per_pos: 양성 샘플당 음성 샘플 비율
         max_rounds: 사용할 최근 회차 수 (None=전체)
-        epochs: 학습 반복 횟수 (60→120 증가)
-        lr: 학습률 (0.1→0.05 감소로 안정화)
-        use_hard_negatives: 하드 네거티브 샘플링 사용 여부
+        epochs: 학습 반복 횟수
+        lr: 학습률
+        use_hard_negatives: 하드 네거티브 샘플링 (랜덤성 학습 모드에서는 무시됨)
+        model_type: 항상 "neural_network" (다른 값 지정해도 무시됨)
         randomness_learning: True면 "무작위성" 학습 (양성=당첨번호, 음성=편향조합)
                             False면 기존 방식 (양성=당첨번호, 음성=랜덤조합)
 
     Returns:
-        학습된 모델 dict (w, b, mu, sigma)
+        학습된 Neural Network 모델 dict
     """
     if history_df is None or history_df.empty:
         raise ValueError("히스토리 없음: ML 학습 불가")
@@ -807,171 +939,61 @@ def train_ml_scorer(
     Xn = (X - mu) / sigma
 
     N, D = Xn.shape
-    w = np.zeros(D, dtype=float)
-    b = 0.0
-
-    # 학습 (조기 종료 포함)
-    best_loss = float('inf')
-    patience = 20  # 20 epoch 동안 개선 없으면 종료
-    patience_counter = 0
 
     print(f"[ML 학습] 샘플: {N}개 (양성: {len(pos_sets)}, 음성: {len(neg_sets)}), 특징: {D}개")
     if randomness_learning:
         print(f"[ML 학습] 모드: 랜덤성 학습 (양성=진짜무작위, 음성=편향조합)")
     else:
         print(f"[ML 학습] 모드: 분류 학습 (하드네거티브: {use_hard_negatives})")
-    print(f"[ML 학습] Epochs: {epochs}, LR: {lr}")
 
-    for epoch in range(epochs):
-        # Forward pass
-        z = Xn @ w + b
-        p = 1.0 / (1.0 + np.exp(-z))
+    # Neural Network만 사용 (최고 성능)
+    try:
+        from sklearn.neural_network import MLPClassifier
+        from sklearn.model_selection import cross_val_score, StratifiedKFold
+    except ImportError:
+        raise ImportError("[오류] scikit-learn 필요. pip install scikit-learn")
 
-        # Loss (Binary Cross-Entropy)
-        loss = -np.mean(y * np.log(p + 1e-10) + (1 - y) * np.log(1 - p + 1e-10))
+    # Neural Network 모델 생성
+    mode_str = "랜덤성학습" if randomness_learning else "분류학습"
+    print(f"[ML 학습] 모델: 신경망 ({mode_str}, 50-30-10 layers)")
+    sklearn_model = MLPClassifier(
+        hidden_layer_sizes=(50, 30, 10),
+        max_iter=200,
+        learning_rate_init=0.01,
+        early_stopping=True,
+        validation_fraction=0.1,
+        random_state=42,
+    )
 
-        # Backward pass
-        grad_w = (Xn.T @ (p - y)) / N
-        grad_b = float((p - y).mean())
-        w -= lr * grad_w
-        b -= lr * grad_b
+    # 학습
+    print(f"[ML 학습] 샘플: {N}개, 특징: {D}개")
+    sklearn_model.fit(Xn, y)
 
-        # 진행률 표시 (매 20 epoch마다)
-        if (epoch + 1) % 20 == 0:
-            acc = ((p > 0.5) == y).mean()
-            print(f"  Epoch {epoch+1}/{epochs}: Loss={loss:.4f}, Acc={acc:.2%}")
+    # 교차 검증 (Stratified K-Fold)
+    skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+    cv_scores = cross_val_score(sklearn_model, Xn, y, cv=skf)
+    train_acc = sklearn_model.score(Xn, y)
 
-        # 조기 종료 체크
-        if loss < best_loss - 1e-4:  # 의미있는 개선
-            best_loss = loss
-            patience_counter = 0
-        else:
-            patience_counter += 1
-            if patience_counter >= patience:
-                print(f"  조기 종료: {epoch+1} epoch (개선 없음)")
-                break
+    print(f"[ML 학습 완료] 훈련 정확도: {train_acc:.2%}")
+    print(f"[교차 검증] 평균: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})")
 
-    # 모델 타입에 따라 다른 알고리즘 사용
-    if model_type == "logistic":
-        # 기존 로지스틱 회귀 (이미 구현됨)
-        final_acc = ((p > 0.5) == y).mean()
-        print(f"[ML 학습 완료] 최종 정확도: {final_acc:.2%}, Loss: {loss:.4f}")
+    # 과적합 탐지
+    overfitting_gap = train_acc - cv_scores.mean()
+    if overfitting_gap > 0.10:
+        print(f"[경고] 과적합 의심! (Gap: {overfitting_gap:.2%})")
+    elif overfitting_gap > 0.05:
+        print(f"[주의] 약간의 과적합 (Gap: {overfitting_gap:.2%})")
 
-        model = {
-            "type": "logistic",
-            "w": w,
-            "b": b,
-            "mu": mu,
-            "sigma": sigma,
-            "accuracy": float(final_acc),
-            "loss": float(loss),
-            "n_features": D,
-        }
-        return model
-
-    elif model_type in ["random_forest", "gradient_boosting", "neural_network"]:
-        # sklearn 기반 강력한 모델
-        try:
-            from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-            from sklearn.neural_network import MLPClassifier
-            from sklearn.model_selection import cross_val_score
-        except ImportError:
-            print("[경고] scikit-learn 필요. pip install scikit-learn")
-            print("[대체] 기본 로지스틱 회귀 사용")
-            model_type = "logistic"
-            # 위의 로지스틱 회귀 코드 재사용
-            final_acc = ((p > 0.5) == y).mean()
-            return {
-                "type": "logistic",
-                "w": w,
-                "b": b,
-                "mu": mu,
-                "sigma": sigma,
-                "accuracy": float(final_acc),
-                "loss": float(loss),
-                "n_features": D,
-            }
-
-        # sklearn 모델 생성
-        mode_str = "랜덤성학습" if randomness_learning else "분류학습"
-        if model_type == "random_forest":
-            print(f"[ML 학습] 모델: 랜덤 포레스트 ({mode_str}, 200 trees)")
-            sklearn_model = RandomForestClassifier(
-                n_estimators=200,
-                max_depth=10,
-                min_samples_split=5,
-                min_samples_leaf=2,
-                random_state=42,
-                n_jobs=-1,  # 모든 CPU 사용
-            )
-        elif model_type == "gradient_boosting":
-            print(f"[ML 학습] 모델: 그래디언트 부스팅 ({mode_str}, 과적합 방지 강화)")
-            sklearn_model = GradientBoostingClassifier(
-                n_estimators=50,          # 100 → 50 (복잡도 감소)
-                learning_rate=0.05,       # 0.1 → 0.05 (학습률 감소)
-                max_depth=3,              # 5 → 3 (깊이 제한 강화)
-                min_samples_split=10,     # 5 → 10 (분할 어렵게)
-                min_samples_leaf=5,       # 2 → 5 (리프 크기 증가)
-                subsample=0.8,            # 배깅 추가
-                max_features='sqrt',      # 특징 샘플링 추가
-                random_state=42,
-            )
-        else:  # neural_network
-            print(f"[ML 학습] 모델: 신경망 ({mode_str}, 50-30-10 layers)")
-            sklearn_model = MLPClassifier(
-                hidden_layer_sizes=(50, 30, 10),
-                max_iter=200,
-                learning_rate_init=0.01,
-                early_stopping=True,
-                validation_fraction=0.1,
-                random_state=42,
-            )
-
-        # 학습
-        print(f"[ML 학습] 샘플: {N}개, 특징: {D}개")
-        sklearn_model.fit(Xn, y)
-
-        # 교차 검증 (Stratified K-Fold)
-        from sklearn.model_selection import StratifiedKFold
-        skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
-        cv_scores = cross_val_score(sklearn_model, Xn, y, cv=skf)
-        train_acc = sklearn_model.score(Xn, y)
-
-        print(f"[ML 학습 완료] 훈련 정확도: {train_acc:.2%}")
-        print(f"[교차 검증] 평균: {cv_scores.mean():.2%} (+/- {cv_scores.std():.2%})")
-
-        # 과적합 탐지
-        overfitting_gap = train_acc - cv_scores.mean()
-        if overfitting_gap > 0.10:
-            print(f"[⚠️  경고] 과적합 의심! (Gap: {overfitting_gap:.2%})")
-            print(f"         ml_weight를 낮추거나 모델을 단순화하세요")
-        elif overfitting_gap > 0.05:
-            print(f"[주의] 약간의 과적합 (Gap: {overfitting_gap:.2%})")
-
-        # 특징 중요도 (랜덤 포레스트, 그래디언트 부스팅만)
-        if hasattr(sklearn_model, 'feature_importances_'):
-            importances = sklearn_model.feature_importances_
-            top_features = np.argsort(importances)[-5:][::-1]
-            print(f"[특징 중요도] 상위 5개: {top_features.tolist()}")
-
-            # 특징 집중도 체크
-            max_importance = importances.max()
-            if max_importance > 0.3:
-                print(f"[⚠️  경고] 한 특징이 {max_importance:.1%} 비중 - 과적합 위험!")
-
-        model = {
-            "type": model_type,
-            "sklearn_model": sklearn_model,
-            "mu": mu,
-            "sigma": sigma,
-            "accuracy": float(train_acc),
-            "cv_scores": cv_scores.tolist(),
-            "n_features": D,
-        }
-        return model
-
-    else:
-        raise ValueError(f"Unknown model_type: {model_type}")
+    model = {
+        "type": "neural_network",
+        "sklearn_model": sklearn_model,
+        "mu": mu,
+        "sigma": sigma,
+        "accuracy": float(train_acc),
+        "cv_scores": cv_scores.tolist(),
+        "n_features": D,
+    }
+    return model
 
 
 def ml_score_set(
