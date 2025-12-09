@@ -648,34 +648,9 @@ class LottoApp(tk.Tk):
                     exclude_set=excl_set or None,
                 )
             elif mode == "MQLE(끝판왕)":
-                # MQLE 모드는 CSV 필수 (히스토리 전략은 선택)
-                if self.history_df is None:
-                    messagebox.showwarning(
-                        "CSV 파일 필요",
-                        "MQLE 모드는 CSV 데이터가 필요합니다.\n"
-                        "상단 메뉴에서 CSV 파일을 먼저 불러오세요."
-                    )
-                    return
-
-                base_sets = None
-                txt = self.text_sets.get("1.0", tk.END)
-                if txt.strip():
-                    try:
-                        base_sets = parse_sets_from_text(txt)
-                    except Exception:
-                        base_sets = None
-                q_bal = self.qc_balance.get() / 100.0
-                ml_w = self.ml_weight.get() / 100.0
-                arr = gen_MQLE(
-                    n,
-                    history_df=self.history_df,
-                    weights=weights,
-                    exclude_set=excl_set or None,
-                    base_sets=base_sets,
-                    q_balance=q_bal,
-                    ml_model=self.ml_model,
-                    ml_weight=ml_w,
-                )
+                # MQLE도 백그라운드 스레드에서 실행 (GUI 멈춤 방지)
+                self._run_mqle_in_background(mode, n, weights)
+                return  # 백그라운드에서 처리하므로 여기서 리턴
             elif mode in ("물리시뮬3D", "물리시뮬3D+MQLE(끝판왕)"):
                 # 물리시뮬은 백그라운드 스레드에서 실행 (GUI 멈춤 방지)
                 self._run_physics_in_background(mode, n, weights)
@@ -688,6 +663,78 @@ class LottoApp(tk.Tk):
 
         self.text_generate.delete("1.0", tk.END)
         self.text_generate.insert("1.0", sets_to_text(arr))
+
+    def _run_mqle_in_background(self, mode: str, n: int, weights):
+        """MQLE를 백그라운드 스레드에서 실행"""
+        # MQLE 모드는 CSV 필수
+        if self.history_df is None:
+            messagebox.showwarning(
+                "CSV 파일 필요",
+                "MQLE 모드는 CSV 데이터가 필요합니다.\n"
+                "상단 메뉴에서 CSV 파일을 먼저 불러오세요."
+            )
+            return
+
+        self.text_generate.delete("1.0", tk.END)
+        self.text_generate.insert("1.0", f"[{mode}] 계산 중... (15개 고전 + 4개 양자 알고리즘)")
+        self.update()  # GUI 즉시 업데이트
+
+        def task():
+            try:
+                from lotto_generators import gen_MQLE
+
+                # 사용자 세트 읽기
+                base_sets = None
+                txt = self.text_sets.get("1.0", tk.END)
+                if txt.strip():
+                    try:
+                        base_sets = parse_sets_from_text(txt)
+                    except Exception:
+                        base_sets = None
+
+                # 제외 세트 읽기
+                excl_set = None
+                ex_text = self.text_exclude.get("1.0", tk.END)
+                if ex_text.strip():
+                    try:
+                        excl_list = [int(x) for x in ex_text.split() if x.isdigit()]
+                        excl_set = set(v for v in excl_list if 1 <= v <= 45)
+                    except Exception:
+                        excl_set = None
+
+                # MQLE 실행
+                q_bal = self.qc_balance.get() / 100.0
+                ml_w = self.ml_weight.get() / 100.0
+                arr = gen_MQLE(
+                    n,
+                    history_df=self.history_df,
+                    weights=weights,
+                    exclude_set=excl_set or None,
+                    base_sets=base_sets,
+                    q_balance=q_bal,
+                    ml_model=self.ml_model,
+                    ml_weight=ml_w,
+                )
+
+                # GUI 업데이트는 메인 스레드에서
+                self.after(0, lambda: self._on_mqle_complete(arr, mode))
+            except Exception as e:
+                import traceback
+                error_msg = f"{str(e)}\n{traceback.format_exc()}"
+                self.after(0, lambda: self._on_mqle_error(error_msg))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_mqle_complete(self, arr: list, mode: str):
+        """MQLE 완료 콜백"""
+        self.text_generate.delete("1.0", tk.END)
+        self.text_generate.insert("1.0", sets_to_text(arr))
+        messagebox.showinfo("완료", f"[{mode}] {len(arr)}개 세트 생성 완료!")
+
+    def _on_mqle_error(self, error: str):
+        """MQLE 에러 콜백"""
+        self.text_generate.delete("1.0", tk.END)
+        messagebox.showerror("MQLE 오류", error)
 
     def _run_physics_in_background(self, mode: str, n: int, weights):
         """3D 물리시뮬을 백그라운드 스레드에서 실행"""
