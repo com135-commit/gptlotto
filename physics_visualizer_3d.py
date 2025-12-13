@@ -41,8 +41,16 @@ import threading
 import time
 from queue import Queue
 from collections import deque
+import importlib
 
+# lotto_physics 모듈 강제 리로드 (코드 변경 시 즉시 반영)
+import lotto_physics
+importlib.reload(lotto_physics)
 from lotto_physics import LottoChamber3D_Ultimate
+
+# 전역 시각화 인스턴스 관리
+_active_visualizers = []
+_visualizers_lock = threading.Lock()
 
 
 class PhysicsThread(threading.Thread):
@@ -55,8 +63,8 @@ class PhysicsThread(threading.Thread):
         self.paused = True  # 시작 시 일시정지 상태
         self.lock = threading.Lock()
 
-        # 상태 큐 (최대 2개 버퍼)
-        self.state_queue = deque(maxlen=2)
+        # 상태 큐 (최대 3개 버퍼 - 보간을 위해)
+        self.state_queue = deque(maxlen=3)
 
         # 물리 시뮬레이션 설정
         self.physics_hz = 60
@@ -105,38 +113,60 @@ class PhysicsThread(threading.Thread):
                 time.sleep(sleep_time)
 
     def get_state(self):
-        """렌더링용 상태 스냅샷 (Thread-Safe)"""
+        """렌더링용 상태 스냅샷 (Thread-Safe) - 최적화됨"""
         with self.lock:
+            # 최적화: 리스트 컴프리헨션 + 튜플 사용 (딕셔너리보다 빠름)
+            balls_data = [
+                (
+                    b.x, b.y, b.z,  # 위치
+                    b.vx, b.vy, b.vz,  # 속도
+                    b.wx, b.wy, b.wz,  # 회전
+                    (b.vx**2 + b.vy**2 + b.vz**2) ** 0.5,  # speed
+                    (b.wx**2 + b.wy**2 + b.wz**2) ** 0.5,  # spin_speed
+                    not b.extracted,  # active
+                    b.number,  # number
+                    b.mass  # mass
+                )
+                for b in self.engine.balls
+            ]
+
             return {
-                'balls': [
-                    {
-                        'x': b.x,
-                        'y': b.y,
-                        'z': b.z,
-                        'vx': b.vx,
-                        'vy': b.vy,
-                        'vz': b.vz,
-                        'wx': b.wx,  # 각속도 X축
-                        'wy': b.wy,  # 각속도 Y축
-                        'wz': b.wz,  # 각속도 Z축
-                        'active': not b.extracted,
-                        'number': b.number,
-                        'mass': b.mass
-                    }
-                    for b in self.engine.balls
-                ],
+                'balls': balls_data,
                 'phase': self.engine.phase,
-                'simulation_time': self.simulation_time,  # 스레드에서 추적
+                'simulation_time': self.simulation_time,
                 'jet_power': self.engine.jet_power,
-                'extracted_balls': list(getattr(self.engine, 'extracted_balls', [])),
+                'extracted': [b.number for b in self.engine.extracted_balls],
                 'chamber_radius': self.engine.chamber_radius
             }
 
-    def get_latest_state(self):
-        """최신 물리 상태 가져오기"""
-        if self.state_queue:
-            return self.state_queue[-1]
-        return None
+    def get_latest_state(self, wait=False, timeout=0.1):
+        """최신 물리 상태 가져오기
+
+        Args:
+            wait: True이면 새 상태가 나올 때까지 대기
+            timeout: 최대 대기 시간 (초)
+        """
+        if not wait:
+            # 기존 동작: 큐에 있으면 반환, 없으면 None
+            if self.state_queue:
+                return self.state_queue[-1]
+            return None
+
+        # 대기 모드: 새 상태가 나올 때까지 대기
+        import time
+        start_time = time.time()
+        last_state = self.state_queue[-1] if self.state_queue else None
+
+        while time.time() - start_time < timeout:
+            if self.state_queue:
+                current_state = self.state_queue[-1]
+                # 새 상태인지 확인 (simulation_time으로 비교)
+                if last_state is None or current_state['simulation_time'] != last_state['simulation_time']:
+                    return current_state
+            time.sleep(0.001)  # 1ms 대기
+
+        # 타임아웃: 마지막 상태 반환
+        return self.state_queue[-1] if self.state_queue else None
 
     def stop(self):
         """스레드 종료"""
@@ -154,14 +184,57 @@ class PhysicsVisualizer3D:
 
         # 물리 엔진 (LottoChamber3D_Ultimate 사용 - 67가지 물리 현상)
         # 매번 다른 결과 생성 (랜덤 시드는 내부에서 자동 생성)
-        self.engine = LottoChamber3D_Ultimate()
+        # ★ CFD(격자 유체) ON으로 물리 엔진 생성
+        self.engine = LottoChamber3D_Ultimate(use_fluid_grid=True)
         # initialize_balls()는 LottoChamber3D_Ultimate.__init__에서 자동 호출됨
+
+        # 추출 설정 강제 적용 (모듈 캐싱 문제 방지)
+        print("=" * 70)
+        print("[시각화 초기화]")
+        print(f"  CFD(격자 유체): {'ON' if self.engine.use_fluid_grid else 'OFF'}")
+        if self.engine.use_fluid_grid:
+            grid = self.engine.fluid_grid
+            print(f"  격자 해상도: {grid.nx}x{grid.ny}x{grid.nz} = {grid.nx * grid.ny * grid.nz} cells")
+        print(f"  추출구 위치: {self.engine.extraction_position}")
+        print(f"  추출구 반지름: {self.engine.extraction_radius} mm")
+        print(f"  진공 위치: {self.engine.vacuum_position}")
+        print(f"  진공 힘: {self.engine.vacuum_force} mm/s²")
+        print(f"  제트 힘: {self.engine.jet_force} mm/s²")
+
+        # 추출 함수가 올바른지 확인
+        import inspect
+        check_func = inspect.getsource(self.engine._check_extraction)
+        if "프레임당 30% 확률" in check_func:
+            print("  추출 함수: 최신 버전 (30% 확률) OK")
+        elif "프레임당 5% 확률" in check_func:
+            print("  추출 함수: 구버전 (5% 확률) - 업데이트 필요!")
+        else:
+            print("  추출 함수: 알 수 없는 버전")
+
+        # 공 초기 위치 확인
+        import numpy as np
+        z_positions = [b.z for b in self.engine.balls]
+        print(f"\n  초기 공 위치:")
+        print(f"    최저: {min(z_positions):.1f}mm")
+        print(f"    최고: {max(z_positions):.1f}mm")
+        print(f"    평균: {np.mean(z_positions):.1f}mm")
+        if min(z_positions) < 50:
+            print(f"    [OK] 바닥부터 시작 (최저 {min(z_positions):.1f}mm)")
+        else:
+            print(f"    [WARN] 너무 높음 (최저 {min(z_positions):.1f}mm)")
+        print("=" * 70)
 
         # 카메라 설정 (정면에서 약간 위에서 내려다보기)
         self.camera_distance = 1400.0  # 최적 거리: 챔버 전체가 한눈에 보임
         self.camera_rotation_x = 30.0  # 위에서 내려다보는 각도 (30도)
         self.camera_rotation_y = 45.0  # 측면에서 보는 각도 (45도)
         self.camera_target = [250, 250, 250]  # 챔버 중심 (물리 엔진 좌표)
+
+        print(f"\n카메라 설정:")
+        print(f"  거리: {self.camera_distance}mm")
+        print(f"  각도: X={self.camera_rotation_x}°, Y={self.camera_rotation_y}°")
+        print(f"  타겟: {self.camera_target}")
+        print(f"  → 챔버 전체(z=0~500mm)가 보입니다\n")
 
         # 마우스 상태
         self.mouse_down = False
@@ -170,7 +243,7 @@ class PhysicsVisualizer3D:
         # 시뮬레이션 상태
         self.selected_balls = []
         self.simulation_time = 0.0
-        self.fps = 60
+        self.fps = 60  # ★ 물리와 동일한 FPS로 변경 (끊김 방지)
         self.current_fps = 60.0
         self.draw_complete = False  # 추첨 완료 여부
         self.completion_time = None  # 추첨 완료 시간
@@ -192,6 +265,7 @@ class PhysicsVisualizer3D:
         # 풍압 조절 설정
         self.jet_force_multiplier = 1.0  # 풍압 배율 (0.5 ~ 2.0)
         self.jet_force_step = 0.05  # 한 번에 조절되는 비율 (5%)
+        self.engine.jet_power = 1.0  # 풍량도 초기화
 
 
         # 모션 블러용 트레일 (최근 3프레임 위치 저장)
@@ -210,9 +284,18 @@ class PhysicsVisualizer3D:
         self.sphere_vertex_count = 0
         self.vbo_initialized = False
 
+        # === Display List: 구 geometry 캐싱 (성능 최적화) ===
+        self.sphere_display_list = None  # 기본 구 (색상용)
+        self.sphere_textured_display_list = None  # 텍스처 구 (숫자용)
+
         # === 공 번호 텍스처 캐시 (성능 최적화) ===
         self.number_textures = {}  # {번호: texture_id}
         self.number_texture_sizes = {}  # {번호: (width, height)}
+
+        # 전역 인스턴스 리스트에 추가
+        global _active_visualizers
+        with _visualizers_lock:
+            _active_visualizers.append(self)
 
     def _generate_ball_colors(self):
         """공 번호별 색상 생성 (실제 로또처럼 각 공마다 다른 색)"""
@@ -243,6 +326,9 @@ class PhysicsVisualizer3D:
         self.font = pygame.font.SysFont("malgun gothic", 20, bold=True)
         self.font_large = pygame.font.SysFont("malgun gothic", 28, bold=True)
 
+        # V-Sync 비활성화 (부드러운 렌더링을 위해)
+        # pygame.display.gl_set_attribute(pygame.GL_SWAP_CONTROL, 0)
+
         # OpenGL 설정
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
@@ -265,6 +351,9 @@ class PhysicsVisualizer3D:
 
         # === VBO: 구체 geometry 생성 및 업로드 ===
         self._create_sphere_vbo()
+
+        # === Display List: 구 geometry 캐싱 (성능 최적화) ===
+        self._create_sphere_display_lists()
 
         # === 공 번호 텍스처 생성 (1~45번) ===
         self.create_number_textures()
@@ -373,6 +462,37 @@ class PhysicsVisualizer3D:
             print(f"[VBO] VBO 생성 실패: {e}")
             print(f"[VBO] Fallback: 기본 렌더링 사용\n")
             self.vbo_initialized = False
+
+    def _create_sphere_display_lists(self):
+        """Display List로 구 geometry 캐싱 (성능 최적화)"""
+        try:
+            # 1. 기본 구 (색상용)
+            self.sphere_display_list = glGenLists(1)
+            glNewList(self.sphere_display_list, GL_COMPILE)
+            quadric = gluNewQuadric()
+            gluQuadricNormals(quadric, GLU_SMOOTH)
+            gluSphere(quadric, 22.25, 16, 16)
+            gluDeleteQuadric(quadric)
+            glEndList()
+
+            # 2. 텍스처 구 (숫자용)
+            self.sphere_textured_display_list = glGenLists(1)
+            glNewList(self.sphere_textured_display_list, GL_COMPILE)
+            quadric2 = gluNewQuadric()
+            gluQuadricNormals(quadric2, GLU_SMOOTH)
+            gluQuadricTexture(quadric2, GL_TRUE)
+            gluSphere(quadric2, 22.26, 16, 16)
+            gluDeleteQuadric(quadric2)
+            glEndList()
+
+            print(f"[Display List] 구 geometry 캐싱 완료!")
+            print(f"      - 기본 구 ID: {self.sphere_display_list}")
+            print(f"      - 텍스처 구 ID: {self.sphere_textured_display_list}\n")
+
+        except Exception as e:
+            print(f"[Display List] 생성 실패: {e}")
+            self.sphere_display_list = None
+            self.sphere_textured_display_list = None
 
     def draw_sphere(self, radius, slices=20, stacks=20):
         """구체 그리기"""
@@ -526,94 +646,6 @@ class PhysicsVisualizer3D:
         gluDeleteQuadric(quadric)
         glPopMatrix()
 
-        # === 상부 공기 배출 슬롯 (Air Vent Slots) ===
-        # 중앙 튜브 바로 아래, 챔버 표면에 길다란 슬롯 형태
-        glDisable(GL_LIGHTING)
-
-        chamber_r = 251  # 챔버 표면 위에 그리기
-        slot_width = 10  # 슬롯 너비 10mm
-        slot_height = 30  # 슬롯 높이 30mm
-
-        # 슬롯 위치 (꼭대기에서 45도 아래)
-        # 꼭대기(Z=251) - 45도 = 251*cos(45°) ≈ 177mm
-        vent_distance = 90  # 중앙에서 90mm 떨어진 위치
-        z_center = 127  # 슬롯 중심 높이 (상단 142mm, 하단 112mm)
-        z_half = slot_height / 2  # 15mm
-
-        # 어두운 슬롯 색상
-        glColor4f(0.05, 0.05, 0.05, 1.0)
-
-        # 4방향 (0도, 90도, 180도, 270도)
-        for direction in range(4):
-            angle_rad = np.radians(direction * 90)
-
-            # 슬롯 중심 위치
-            center_x = vent_distance * np.cos(angle_rad)
-            center_y = vent_distance * np.sin(angle_rad)
-
-            # 슬롯을 따라 세그먼트 생성 (구체 표면을 따라)
-            num_segments = 15
-            glBegin(GL_QUAD_STRIP)
-
-            for seg_idx in range(num_segments + 1):
-                # 슬롯을 45도 기울임 (radial 방향으로)
-                t = seg_idx / num_segments
-                z_offset = z_half - t * slot_height  # +25 ~ -25
-
-                # 45도 기울임: 위쪽은 안쪽(중앙), 아래쪽은 바깥쪽(적도)
-                # z_offset: +15(위) ~ -15(아래)
-                tilt_angle = np.radians(45)
-                radial_offset = -z_offset * np.tan(tilt_angle)  # 음수: 위는 안쪽, 아래는 바깥쪽
-
-                # 기울어진 위치
-                tilted_distance = vent_distance + radial_offset
-                tilted_x = tilted_distance * np.cos(angle_rad)
-                tilted_y = tilted_distance * np.sin(angle_rad)
-                z_pos = z_center + z_offset
-
-                # 구체 표면으로 투영
-                dist_center = np.sqrt(tilted_x**2 + tilted_y**2 + z_pos**2)
-                surf_x = tilted_x / dist_center * chamber_r
-                surf_y = tilted_y / dist_center * chamber_r
-                surf_z = z_pos / dist_center * chamber_r
-
-                # 슬롯 방향 벡터 (접선 방향)
-                # 중심에서 수직인 방향
-                tangent_x = -center_y
-                tangent_y = center_x
-                tangent_length = np.sqrt(tangent_x**2 + tangent_y**2)
-                if tangent_length > 0.001:
-                    tangent_x /= tangent_length
-                    tangent_y /= tangent_length
-
-                # 슬롯 양쪽 끝점
-                half_width = slot_width / 2
-                left_x = surf_x - tangent_x * half_width
-                left_y = surf_y - tangent_y * half_width
-                left_z = surf_z
-
-                right_x = surf_x + tangent_x * half_width
-                right_y = surf_y + tangent_y * half_width
-                right_z = surf_z
-
-                # 양쪽 끝점을 표면에 다시 투영
-                left_dist = np.sqrt(left_x**2 + left_y**2 + left_z**2)
-                left_x = left_x / left_dist * chamber_r
-                left_y = left_y / left_dist * chamber_r
-                left_z = left_z / left_dist * chamber_r
-
-                right_dist = np.sqrt(right_x**2 + right_y**2 + right_z**2)
-                right_x = right_x / right_dist * chamber_r
-                right_y = right_y / right_dist * chamber_r
-                right_z = right_z / right_dist * chamber_r
-
-                # QUAD_STRIP: 좌-우-좌-우...
-                glVertex3f(left_x, left_y, left_z)
-                glVertex3f(right_x, right_y, right_z)
-
-            glEnd()
-
-        glEnable(GL_LIGHTING)
 
         # COLOR_MATERIAL 다시 활성화 (공 그리기를 위해)
         glEnable(GL_COLOR_MATERIAL)
@@ -677,65 +709,73 @@ class PhysicsVisualizer3D:
         glPopMatrix()
 
     def draw_ball_from_data(self, ball_data):
-        """공 그리기 (딕셔너리 데이터로부터 - VBO 버전)"""
+        """공 그리기 (튜플 데이터로부터 - VBO 버전, 최적화됨)"""
+        # 튜플 인덱스: 0-2=위치, 3-5=속도, 6-8=회전, 9=speed, 10=spin_speed, 11=active, 12=number, 13=mass
+
+        # 추출된 공은 그리지 않음 (2D 오버레이에만 표시)
+        if not ball_data[11]:  # active
+            return
+
+        # 챔버 밖 위치면 그리지 않음 (-1000, -1000, -1000)
+        x, y, z = ball_data[0], ball_data[1], ball_data[2]  # 위치
+        if x < -500 or y < -500 or z < -500:
+            return
+
         glPushMatrix()
 
         # COLOR_MATERIAL 비활성화
         glDisable(GL_COLOR_MATERIAL)
 
         # 위치
-        glTranslatef(ball_data['x'], ball_data['y'], ball_data['z'])
+        glTranslatef(x, y, z)
 
         # 회전 (물리 엔진의 실제 각속도 사용)
-        ball_num = ball_data['number']
+        ball_num = ball_data[12]  # number
         ball_idx = ball_num - 1
 
         # 각속도가 있으면 회전 적용
-        if 'wx' in ball_data and ball_data['wx'] is not None:
-            wx, wy, wz = ball_data['wx'], ball_data['wy'], ball_data['wz']
-            spin_mag = np.sqrt(wx**2 + wy**2 + wz**2)
+        wx, wy, wz = ball_data[6], ball_data[7], ball_data[8]  # 회전 속도
+        spin_mag = ball_data[10]  # spin_speed (이미 계산됨)
 
-            if spin_mag > 0.01:  # 회전이 있으면
-                # dt = 1/60초 동안 회전한 각도 (rad/s → deg)
-                dt = 1.0 / 60.0
-                delta_angle = spin_mag * dt * 57.3  # rad → deg
+        if spin_mag > 0.01:  # 회전이 있으면
+            # dt = 1/60초 동안 회전한 각도 (rad/s → deg)
+            dt = 1.0 / 60.0
+            delta_angle = spin_mag * dt * 57.3  # rad → deg
 
-                # 회전축 (정규화)
-                axis_x = wx / spin_mag
-                axis_y = wy / spin_mag
-                axis_z = wz / spin_mag
+            # 회전축 (정규화)
+            axis_x = wx / spin_mag
+            axis_y = wy / spin_mag
+            axis_z = wz / spin_mag
 
-                # 누적 회전 업데이트
-                current_rotation = self.ball_rotations[ball_idx]
-                current_rotation[0] += delta_angle  # 각도 누적
+            # 누적 회전 업데이트
+            current_rotation = self.ball_rotations[ball_idx]
+            current_rotation[0] += delta_angle  # 각도 누적
 
-                # 회전축 업데이트 (지수 평균)
-                alpha = 0.9  # 이전 축에 90% 가중치
-                current_rotation[1] = alpha * current_rotation[1] + (1 - alpha) * axis_x
-                current_rotation[2] = alpha * current_rotation[2] + (1 - alpha) * axis_y
-                current_rotation[3] = alpha * current_rotation[3] + (1 - alpha) * axis_z
+            # 회전축 업데이트 (지수 평균)
+            alpha = 0.9  # 이전 축에 90% 가중치
+            current_rotation[1] = alpha * current_rotation[1] + (1 - alpha) * axis_x
+            current_rotation[2] = alpha * current_rotation[2] + (1 - alpha) * axis_y
+            current_rotation[3] = alpha * current_rotation[3] + (1 - alpha) * axis_z
 
-                # 회전축 재정규화
-                axis_mag = np.sqrt(current_rotation[1]**2 + current_rotation[2]**2 + current_rotation[3]**2)
-                if axis_mag > 0.001:
-                    current_rotation[1] /= axis_mag
-                    current_rotation[2] /= axis_mag
-                    current_rotation[3] /= axis_mag
+            # 회전축 재정규화
+            axis_mag = np.sqrt(current_rotation[1]**2 + current_rotation[2]**2 + current_rotation[3]**2)
+            if axis_mag > 0.001:
+                current_rotation[1] /= axis_mag
+                current_rotation[2] /= axis_mag
+                current_rotation[3] /= axis_mag
 
-                # OpenGL 회전 적용 (누적된 회전)
-                glRotatef(current_rotation[0], current_rotation[1], current_rotation[2], current_rotation[3])
+            # OpenGL 회전 적용 (누적된 회전)
+            glRotatef(current_rotation[0], current_rotation[1], current_rotation[2], current_rotation[3])
 
         # 공 재질 설정
         color = self.ball_colors[ball_num - 1]
 
         # === 물리 기반 시각 효과 ===
-        # 1) 속도 계산
-        speed = np.sqrt(ball_data['vx']**2 + ball_data['vy']**2 + ball_data['vz']**2)
+        # 1) 속도 (물리 스레드에서 미리 계산됨)
+        speed = ball_data[9]  # speed (인덱스 9)
 
-        # 2) 회전 속도 계산
-        spin_speed = 0.0
-        if 'wx' in ball_data and ball_data['wx'] is not None:
-            spin_speed = np.sqrt(ball_data['wx']**2 + ball_data['wy']**2 + ball_data['wz']**2)
+        # 2) 회전 속도 (물리 스레드에서 미리 계산됨)
+        spin_speed = ball_data[10]  # spin_speed (인덱스 10, 이미 사용함)
 
         # 3) 속도 기반 밝기 증가 (운동 에너지 시각화)
         # 빠른 공 → 밝게 빛남
@@ -770,10 +810,15 @@ class PhysicsVisualizer3D:
         glMaterialf(GL_FRONT, GL_SHININESS, shininess)
 
         # === 렌더링 1: 먼저 공 색상만 그리기 ===
-        quadric = gluNewQuadric()
-        gluQuadricNormals(quadric, GLU_SMOOTH)
-        gluSphere(quadric, 22.25, 16, 16)  # 32→16 (4배 성능 향상)
-        gluDeleteQuadric(quadric)
+        # Display List 사용 (90배 빠름: 45개 공 × 2번씩 → 2번만)
+        if self.sphere_display_list:
+            glCallList(self.sphere_display_list)
+        else:
+            # Fallback: Display List 실패 시 기본 방식
+            quadric = gluNewQuadric()
+            gluQuadricNormals(quadric, GLU_SMOOTH)
+            gluSphere(quadric, 22.25, 16, 16)
+            gluDeleteQuadric(quadric)
 
         # === 렌더링 2: 텍스처(숫자) 위에 덧그리기 ===
         if ball_num in self.number_textures:
@@ -799,12 +844,16 @@ class PhysicsVisualizer3D:
             glEnable(GL_POLYGON_OFFSET_FILL)
             glPolygonOffset(-1.0, -1.0)
 
-            # 텍스처와 함께 다시 그리기
-            quadric2 = gluNewQuadric()
-            gluQuadricNormals(quadric2, GLU_SMOOTH)
-            gluQuadricTexture(quadric2, GL_TRUE)
-            gluSphere(quadric2, 22.26, 16, 16)  # 32→16 (4배 성능 향상)
-            gluDeleteQuadric(quadric2)
+            # 텍스처와 함께 다시 그리기 - Display List 사용
+            if self.sphere_textured_display_list:
+                glCallList(self.sphere_textured_display_list)
+            else:
+                # Fallback
+                quadric2 = gluNewQuadric()
+                gluQuadricNormals(quadric2, GLU_SMOOTH)
+                gluQuadricTexture(quadric2, GL_TRUE)
+                gluSphere(quadric2, 22.26, 16, 16)
+                gluDeleteQuadric(quadric2)
 
             glDisable(GL_POLYGON_OFFSET_FILL)
 
@@ -947,6 +996,9 @@ class PhysicsVisualizer3D:
         # OpenGL에서 2D 텍스트는 텍스처로 렌더링
         self._render_text_overlay()
 
+        # 추출된 공 표시 (화면 하단)
+        self._draw_extracted_balls()
+
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
 
@@ -988,6 +1040,15 @@ class PhysicsVisualizer3D:
         active_count = sum(1 for b in self.engine.balls if not b.extracted)
         balls_text = f"챔버 내 공: {active_count}개"
 
+        # CFD 평균 속도 계산
+        import numpy as np
+        cfd_speed = np.sqrt(
+            self.engine.fluid_grid.vx.mean()**2 +
+            self.engine.fluid_grid.vy.mean()**2 +
+            self.engine.fluid_grid.vz.mean()**2
+        )
+        cfd_text = f"CFD 속도: {cfd_speed:.0f} mm/s"
+
         texts = [
             (status_text, 20, 870, (100, 255, 100)),
             (time_text, 20, 840, (200, 200, 255)),
@@ -996,7 +1057,8 @@ class PhysicsVisualizer3D:
             (phase_text, 20, 810, (255, 200, 100)),
             (jet_power_text, 20, 780, (100, 200, 255)),
             (jet_force_text, 20, 750, (255, 200, 100)),
-            (balls_text, 20, 720, (255, 255, 255))
+            (cfd_text, 20, 720, (100, 255, 200)),
+            (balls_text, 20, 690, (255, 255, 255))
         ]
 
         # 선택된 번호 (6개 + 보너스 1개)
@@ -1078,6 +1140,106 @@ class PhysicsVisualizer3D:
         glRasterPos2f(x, y)
         glDrawPixels(width, height, GL_RGBA, GL_UNSIGNED_BYTE, text_data)
 
+    def _draw_extracted_balls(self):
+        """추출된 공들을 화면 하단에 원형으로 표시"""
+        if not self.selected_balls:
+            return
+
+        # 2D 오버레이 모드 (이미 draw_ui_overlay에서 설정됨)
+        glDisable(GL_DEPTH_TEST)
+        glDisable(GL_LIGHTING)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+        # 화면 크기
+        screen_w, screen_h = self.display_size  # 1200 x 900
+
+        # 공 크기 및 배치
+        ball_radius = 35  # 픽셀
+        spacing = 90  # 공 간격
+        start_y = 80  # 화면 하단에서 위로 80px
+
+        # 7개 공의 총 너비 계산
+        total_width = len(self.selected_balls) * spacing
+        start_x = (screen_w - total_width) / 2 + spacing / 2  # 중앙 정렬
+
+        # 각 공 그리기
+        for i, ball_number in enumerate(self.selected_balls):
+            x = start_x + i * spacing
+            y = start_y
+
+            # 보너스 공은 약간 작고 다른 색
+            is_bonus = (i == 6)
+            radius = ball_radius * 0.9 if is_bonus else ball_radius
+
+            # 공 색상 (번호에 따라 다른 색)
+            if ball_number <= 10:
+                color = (255, 200, 50)  # 노란색
+            elif ball_number <= 20:
+                color = (100, 150, 255)  # 파란색
+            elif ball_number <= 30:
+                color = (255, 100, 100)  # 빨간색
+            elif ball_number <= 40:
+                color = (150, 150, 150)  # 회색
+            else:
+                color = (100, 255, 100)  # 녹색
+
+            # 보너스는 주황색
+            if is_bonus:
+                color = (255, 150, 50)
+
+            # 공 테두리 (어두운 원)
+            self._draw_circle_2d(x, y, radius + 3, (50, 50, 50))
+
+            # 공 본체
+            self._draw_circle_2d(x, y, radius, color)
+
+            # 번호 텍스트 (흰색, 큰 폰트)
+            if hasattr(self, 'font_large'):
+                font = self.font_large
+            else:
+                font = pygame.font.Font(None, 48)
+                self.font_large = font
+
+            text_surface = font.render(str(ball_number), True, (255, 255, 255))
+            text_w, text_h = text_surface.get_size()
+
+            # 텍스트 중앙 정렬
+            text_x = x - text_w / 2
+            text_y = y - text_h / 2
+
+            # OpenGL 좌표로 변환하여 텍스트 그리기
+            text_data = pygame.image.tostring(text_surface, "RGBA", True)
+            glRasterPos2f(text_x, text_y)
+            glDrawPixels(text_w, text_h, GL_RGBA, GL_UNSIGNED_BYTE, text_data)
+
+            # 보너스 라벨
+            if is_bonus:
+                label_font = pygame.font.Font(None, 20)
+                label_surface = label_font.render("BONUS", True, (255, 200, 50))
+                label_w, label_h = label_surface.get_size()
+                label_x = x - label_w / 2
+                label_y = y + radius + 10
+
+                label_data = pygame.image.tostring(label_surface, "RGBA", True)
+                glRasterPos2f(label_x, label_y)
+                glDrawPixels(label_w, label_h, GL_RGBA, GL_UNSIGNED_BYTE, label_data)
+
+        glDisable(GL_BLEND)
+
+    def _draw_circle_2d(self, x, y, radius, color):
+        """2D 원 그리기 (filled)"""
+        glColor3ub(color[0], color[1], color[2])
+        glBegin(GL_TRIANGLE_FAN)
+        glVertex2f(x, y)
+        segments = 32
+        for i in range(segments + 1):
+            angle = 2.0 * np.pi * i / segments
+            dx = radius * np.cos(angle)
+            dy = radius * np.sin(angle)
+            glVertex2f(x + dx, y + dy)
+        glEnd()
+
     def update_camera(self):
         """카메라 업데이트 (자유 회전)"""
         glLoadIdentity()
@@ -1103,48 +1265,111 @@ class PhysicsVisualizer3D:
                 if event.key == pygame.K_ESCAPE:
                     self.running = False
                 elif event.key == pygame.K_SPACE:
-                    self.paused = not self.paused
-                    # 물리 스레드 동기화
-                    self.physics_thread.paused = self.paused
-                elif event.key == pygame.K_r:
-                    # 리셋 - 엔진 초기화
-                    # 난수 생성기 리셋 (새로운 시드로 다른 결과)
-                    import numpy as np
-                    self.engine.rng = np.random.default_rng()
+                    # ★ 추첨 완료 상태에서 스페이스바 → 자동 리셋
+                    if self.draw_complete:
+                        # 리셋 로직 실행
+                        with self.physics_thread.lock:
+                            # 난수 생성기 리셋 (새로운 시드로 다른 결과)
+                            import numpy as np
+                            self.engine.rng = np.random.default_rng()
 
-                    self.engine._initialize_balls()
-                    self.engine.extracted_balls = []  # 추출된 공 리스트도 초기화
+                            # 공 재초기화 (바닥부터 시작)
+                            self.engine._initialize_balls()
+                            self.engine.extracted_balls = []
+                            self.engine.time = 0.0
+
+                            # phase 초기화
+                            self.engine.phase = "INITIAL"
+                            self.engine.phase_timer = 0.0
+                            self.engine.extracted_count = 0
+                            self.engine.captured_ball = None
+
+                            # 물리 힘 복원
+                            self.engine.jet_force = self.original_jet_force * self.jet_force_multiplier
+                            self.engine.jet_power = self.jet_force_multiplier  # 풍량도 같이 복원
+                            self.engine.vacuum_force = 100000.0
+                            self.engine.turbulence = 80000.0
+
+                        # 렌더러 상태 리셋
+                        self.selected_balls = []
+                        self.simulation_time = 0.0
+                        self.draw_complete = False
+                        self.completion_time = None
+                        self.auto_pause_message_shown = False
+                        self.paused = False
+                        self.latest_physics_state = None  # ★ 이전 물리 상태 클리어
+
+                        # 물리 스레드 동기화
+                        self.physics_thread.paused = False
+                        self.physics_thread.simulation_time = 0.0
+                        self.physics_thread.state_queue.clear()
+
+                        print("\n[스페이스바] 리셋! 새로운 추첨을 시작합니다...\n")
+                    else:
+                        # 일반 일시정지 토글
+                        self.paused = not self.paused
+                        # 물리 스레드 동기화
+                        self.physics_thread.paused = self.paused
+                elif event.key == pygame.K_r:
+                    # 리셋 - 엔진 초기화 (Thread-Safe)
+                    # 물리 스레드의 lock을 획득하여 안전하게 리셋
+                    with self.physics_thread.lock:
+                        # 난수 생성기 리셋 (새로운 시드로 다른 결과)
+                        import numpy as np
+                        self.engine.rng = np.random.default_rng()
+
+                        # 공 재초기화 (바닥부터 시작)
+                        self.engine._initialize_balls()
+                        self.engine.extracted_balls = []  # 추출된 공 리스트도 초기화
+                        self.engine.time = 0.0  # 물리 엔진 시간 리셋
+
+                        # phase 초기화
+                        self.engine.phase = "INITIAL"
+                        self.engine.phase_timer = 0.0
+                        self.engine.extracted_count = 0
+                        self.engine.captured_ball = None
+
+                        # 물리 힘 복원 (추첨 완료 시 꺼진 것들)
+                        self.engine.jet_force = self.original_jet_force * self.jet_force_multiplier
+                        self.engine.jet_power = self.jet_force_multiplier  # 풍량도 같이 복원
+                        self.engine.vacuum_force = 100000.0  # 원래 값
+                        self.engine.turbulence = 80000.0  # 원래 값
+
+                    # 렌더러 상태 리셋
                     self.selected_balls = []
                     self.simulation_time = 0.0
                     self.draw_complete = False
                     self.completion_time = None
                     self.auto_pause_message_shown = False  # 메시지 플래그 리셋
                     self.paused = False  # 일시정지 해제
+                    self.latest_physics_state = None  # ★ 이전 물리 상태 클리어
+
                     # 물리 스레드 동기화
                     self.physics_thread.paused = False
                     self.physics_thread.simulation_time = 0.0  # 물리 스레드 시간도 리셋
-                    # 공기력 복구 (현재 배율 적용)
-                    self.engine.jet_force = self.original_jet_force * self.jet_force_multiplier
-                    # 난류 복구 (추첨 완료 시 0으로 설정되었을 수 있음)
-                    self.engine.turbulence = 9000.0
-                    # phase도 초기화
-                    self.engine.phase = "INITIAL"
-                    self.engine.phase_timer = 0.0
-                    self.engine.extracted_count = 0
-                    self.engine.captured_ball = None
+
+                    # 상태 큐 클리어 (오래된 상태 제거)
+                    self.physics_thread.state_queue.clear()
+
                     print("\n리셋! 새로운 추첨을 시작합니다...\n")
 
                 elif event.key == pygame.K_UP:
                     # 풍압 증가 (최대 200%)
                     self.jet_force_multiplier = min(2.0, self.jet_force_multiplier + self.jet_force_step)
                     self.engine.jet_force = self.original_jet_force * self.jet_force_multiplier
+                    self.engine.jet_power = self.jet_force_multiplier  # 풍량도 같이 조절
                     print(f"풍압: {self.jet_force_multiplier*100:.0f}% ({self.engine.jet_force:.1f} mm/s²)")
 
                 elif event.key == pygame.K_DOWN:
-                    # 풍압 감소 (최소 50%)
-                    self.jet_force_multiplier = max(0.5, self.jet_force_multiplier - self.jet_force_step)
+                    # 풍압 감소 (최소 0%)
+                    self.jet_force_multiplier = max(0.0, self.jet_force_multiplier - self.jet_force_step)
                     self.engine.jet_force = self.original_jet_force * self.jet_force_multiplier
-                    print(f"풍압: {self.jet_force_multiplier*100:.0f}% ({self.engine.jet_force:.1f} mm/s²)")
+                    self.engine.jet_power = self.jet_force_multiplier  # 풍량도 같이 조절
+
+                    if self.jet_force_multiplier == 0.0:
+                        print(f"풍압: 0% (송풍기 OFF)")
+                    else:
+                        print(f"풍압: {self.jet_force_multiplier*100:.0f}% ({self.engine.jet_force:.1f} mm/s²)")
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # 왼쪽 버튼
@@ -1275,14 +1500,15 @@ class PhysicsVisualizer3D:
         balls_rendered = 0
 
         # 물리 스레드의 스냅샷 사용 (Thread-Safe)
+        # 튜플 인덱스: 0-2=위치, 3-5=속도, 6-8=회전, 9=speed, 10=spin_speed, 11=active, 12=number, 13=mass
         balls_data = self.latest_physics_state['balls']
         for ball_data in balls_data:
-            if ball_data['active']:  # 활성화된 공만 그리기
+            if ball_data[11]:  # active (인덱스 11)
                 self.draw_ball_from_data(ball_data)
                 balls_rendered += 1
 
-        # 선택된 공들 따로 표시
-        self.draw_selected_balls_display()
+        # 추출된 공은 3D에서 표시하지 않음 (2D 오버레이만)
+        # self.draw_selected_balls_display()  # 제거됨
 
         # 2단계: 투명 객체 나중에 그리기 (챔버)
         glEnable(GL_BLEND)
@@ -1298,18 +1524,23 @@ class PhysicsVisualizer3D:
 
     def step_simulation(self):
         """물리 상태 가져오기 (멀티스레드 버전)"""
-        # 물리 스레드에서 최신 상태 가져오기
-        new_state = self.physics_thread.get_latest_state()
+        # ★ 개선: 일시정지 중이 아닐 때만 대기 (끊김 방지 + 먹통 방지)
+        should_wait = not self.paused and not self.physics_thread.paused
+        new_state = self.physics_thread.get_latest_state(wait=should_wait, timeout=0.05)
 
+        # 새 상태가 있을 때만 업데이트
         if new_state:
             self.latest_physics_state = new_state
             self.simulation_time = new_state['simulation_time']
 
             # 트레일 업데이트 (렌더링 스레드에서 처리)
+            # 튜플 언패킹으로 최적화
+            # 튜플 인덱스: 0-2=위치, 3-5=속도, 6-8=회전, 9=speed, 10=spin_speed, 11=active, 12=number, 13=mass
             for i, ball_data in enumerate(new_state['balls']):
-                if ball_data['active']:
-                    # 속도 계산
-                    speed = np.sqrt(ball_data['vx']**2 + ball_data['vy']**2 + ball_data['vz']**2)
+                active = ball_data[11]  # active
+                if active:
+                    # 속도는 물리 스레드에서 미리 계산됨
+                    speed = ball_data[9]  # speed
 
                     # 속도에 비례한 트레일 길이 (빠른 공 → 긴 잔상)
                     # 100mm/s 미만: 트레일 없음
@@ -1321,7 +1552,8 @@ class PhysicsVisualizer3D:
 
                     # 현재 위치를 트레일에 추가
                     if max_trail_length > 0:
-                        self.ball_trails[i].append([ball_data['x'], ball_data['y'], ball_data['z']])
+                        x, y, z = ball_data[0], ball_data[1], ball_data[2]  # 위치
+                        self.ball_trails[i].append([x, y, z])
                         # 속도에 따라 다른 길이 유지
                         if len(self.ball_trails[i]) > max_trail_length:
                             self.ball_trails[i].pop(0)
@@ -1333,7 +1565,7 @@ class PhysicsVisualizer3D:
                     self.ball_trails[i] = []
 
             # 추출된 공 확인
-            extracted = new_state.get('extracted_balls', [])
+            extracted = new_state.get('extracted', [])
             if len(extracted) > len(self.selected_balls):
                 # 새로운 공이 추출됨
                 new_ball = extracted[-1]
@@ -1348,17 +1580,42 @@ class PhysicsVisualizer3D:
                     if len(self.selected_balls) == 7:
                         self.draw_complete = True
                         self.completion_time = self.simulation_time
-                        self.engine.turbulence = 0.0
 
-            # 추첨 완료 후 20초 뒤 자동 일시정지 (공들이 바닥에 떨어질 시간 확보)
-            if self.draw_complete and self.completion_time is not None:
-                if self.simulation_time - self.completion_time >= 20.0:
-                    if not self.paused:  # 아직 정지되지 않았을 때만
-                        self.paused = True
-                        if not self.auto_pause_message_shown:  # 메시지를 아직 출력하지 않았을 때만
-                            print("\n시뮬레이션이 자동으로 정지되었습니다.")
-                            print("R키를 눌러 새 추첨을 시작하세요.\n")
-                            self.auto_pause_message_shown = True
+                        # 모든 공기력 중단 (공들이 바닥으로 떨어지도록)
+                        self.engine.turbulence = 0.0
+                        self.engine.jet_force = 0.0  # 제트 바람 끄기
+                        self.engine.vacuum_force = 0.0  # 진공도 끄기
+
+                        print("\n" + "=" * 70)
+                        print("공들이 바닥으로 떨어지는 중...")
+                        print("=" * 70 + "\n")
+
+            # ★ 추첨 완료 후: 모든 공이 바닥에 떨어지면 자동 정지
+            if self.draw_complete and not self.paused:
+                # 모든 공의 속도 확인 (추출된 공 제외)
+                all_settled = True
+                for ball_data in new_state['balls']:
+                    active = ball_data[11]  # active (챔버 안에 있는 공)
+                    if active:
+                        speed = ball_data[9]  # 속도
+                        z = ball_data[2]  # z 좌표
+
+                        # 속도가 빠르거나 공중에 떠있으면 아직 안정되지 않음
+                        if speed > 50 or z > 100:  # 50mm/s 이상 또는 바닥에서 100mm 이상
+                            all_settled = False
+                            break
+
+                if all_settled:
+                    # 모든 공이 바닥에 정착 → 자동 정지
+                    self.paused = True
+                    self.physics_thread.paused = True
+                    if not self.auto_pause_message_shown:
+                        print("\n" + "=" * 70)
+                        print("✅ 모든 공이 바닥에 안착 - 시뮬레이션 자동 정지")
+                        print("스페이스바를 눌러 새 추첨을 시작하세요.")
+                        print("=" * 70 + "\n")
+                        self.auto_pause_message_shown = True
+        # else: 새 상태가 없어도 self.latest_physics_state는 유지됨 (마지막 상태 재사용)
 
     def run(self):
         """메인 루프 (멀티스레드 버전)"""
@@ -1399,6 +1656,8 @@ class PhysicsVisualizer3D:
                 # FPS 업데이트
                 clock.tick(self.fps)
                 self.current_fps = clock.get_fps()
+        except KeyboardInterrupt:
+            print("\n[종료] Ctrl+C 감지됨")
         finally:
             # === 물리 스레드 종료 ===
             print("\n[멀티스레드] 물리 엔진 스레드 종료 중...")
@@ -1406,7 +1665,15 @@ class PhysicsVisualizer3D:
             self.physics_thread.join(timeout=2.0)
             print("[멀티스레드] 종료 완료")
 
-        pygame.quit()
+            # pygame 종료
+            pygame.quit()
+            print("[종료] 시각화 프로그램 종료 완료")
+
+            # 전역 인스턴스 리스트에서 제거
+            global _active_visualizers
+            with _visualizers_lock:
+                if self in _active_visualizers:
+                    _active_visualizers.remove(self)
 
 
 def launch_visualizer(num_balls=45, mode="물리시뮬3D"):
@@ -1418,6 +1685,42 @@ def launch_visualizer(num_balls=45, mode="물리시뮬3D"):
         print(f"시각화 오류: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        # 스레드 내에서 실행될 때는 sys.exit() 호출하지 않음
+        # (메인 프로그램을 종료시키지 않기 위해)
+        print("[종료] 시각화 스레드 정상 종료")
+
+
+def cleanup_all_visualizers():
+    """모든 활성 시각화 윈도우 종료"""
+    global _active_visualizers
+    with _visualizers_lock:
+        visualizers = list(_active_visualizers)  # 복사본 생성
+
+    if not visualizers:
+        return
+
+    print(f"\n[정리] {len(visualizers)}개의 시각화 윈도우를 종료합니다...")
+
+    for viz in visualizers:
+        try:
+            # running 플래그 종료
+            viz.running = False
+
+            # 물리 스레드 종료
+            if hasattr(viz, 'physics_thread') and viz.physics_thread:
+                viz.physics_thread.stop()
+
+            # pygame 이벤트로 강제 종료 (이벤트 루프가 실행 중인 경우)
+            try:
+                pygame.event.post(pygame.event.Event(pygame.QUIT))
+            except:
+                pass
+
+        except Exception as e:
+            print(f"   [WARN] 시각화 윈도우 종료 중 오류: {e}")
+
+    print("   [OK] 모든 시각화 윈도우 종료 완료")
 
 
 if __name__ == "__main__":

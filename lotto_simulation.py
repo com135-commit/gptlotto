@@ -639,12 +639,110 @@ def _build_synthetic_player_pool_chunk(
 
 
 
+def _filter_ticket_pool_chunk(
+    combo_items: list[tuple[tuple[int, ...], int]],
+    scale_factor: float,
+    tmin: int,
+    tmax: int,
+    center: float,
+    ml_model,
+    ml_weight: float,
+    weights,
+    history_df,
+) -> list[tuple[list[int], float, float]]:
+    """
+    ticket_pool의 일부 조합들을 필터링하는 멀티프로세스 워커 함수
+
+    ⚡ 최적화: 배치 처리로 ML 점수 계산 속도 10-1000배 향상
+
+    Returns:
+        ML 사용 시: [(combo, lam, combined_score), ...]
+        ML 미사용: [(combo, lam), ...]
+    """
+    use_ml = ml_model is not None and ml_weight > 0 and history_df is not None
+
+    # 1단계: 범위 체크 (빠른 필터링)
+    filtered_combos = []
+    filtered_lams = []
+
+    for combo_tuple, buyer_count in combo_items:
+        lam = float(buyer_count) * float(scale_factor)
+        if tmin <= lam <= tmax:
+            filtered_combos.append(list(combo_tuple))
+            filtered_lams.append(lam)
+
+    # 범위 내 조합이 없으면 즉시 반환
+    if not filtered_combos:
+        return []
+
+    # 2단계: ML 점수 계산 (배치 처리)
+    if use_ml:
+        # ⚡ 배치로 한 번에 ML 점수 계산 (10-1000배 빠름)
+        from lotto_generators import (
+            _compute_core_features_batch,
+            _compute_history_features_batch,
+            _prepare_history_array
+        )
+        import numpy as np
+
+        try:
+            # ⚡ Wrapper 동적 생성 (멀티프로세싱 호환)
+            if 'model' not in ml_model:
+                # Stacking 모델인 경우 wrapper 생성
+                if ml_model.get('type') == 'stacking':
+                    from lotto_main import StackingModelWrapper
+                    base_models = ml_model.get('base_models')
+                    meta_model = ml_model.get('meta_model')
+                    if base_models and meta_model:
+                        ml_model['model'] = StackingModelWrapper(base_models, meta_model)
+
+            # 배치로 변환
+            combos_arr = np.array(filtered_combos, dtype=np.float64)  # (N, 6)
+
+            # 히스토리 준비
+            history_arr = _prepare_history_array(history_df)
+
+            # 배치 특징 추출 (Numba 병렬)
+            core_features = _compute_core_features_batch(combos_arr)  # (N, 39)
+            hist_features = _compute_history_features_batch(combos_arr, history_arr)  # (N, 11)
+            X = np.hstack([core_features, hist_features])  # (N, 50)
+
+            # 정규화
+            mu = ml_model['mu']
+            sigma = ml_model['sigma']
+            Xn = (X - mu) / sigma
+
+            # 배치 예측 (한 번에!)
+            ml_scores = ml_model['model'].predict_proba(Xn)[:, 1]  # (N,)
+
+        except Exception as e:
+            print(f"[WARN] 배치 ML 점수 계산 실패: {e}, 기본값 0.5 사용")
+            ml_scores = np.ones(len(filtered_combos)) * 0.5
+
+        # 3단계: 결과 조합
+        results = []
+        for combo, lam, ml_score in zip(filtered_combos, filtered_lams, ml_scores):
+            # 1등 인원 적합도
+            lam_score = 1.0 - abs(lam - center) / max(1, tmax - tmin)
+
+            # Combined score
+            combined_score = (1 - ml_weight) * lam_score + ml_weight * ml_score
+
+            results.append((combo, lam, combined_score))
+
+        return results
+
+    else:
+        # ML 미사용: 그냥 반환
+        return [(combo, lam) for combo, lam in zip(filtered_combos, filtered_lams)]
+
 
 def build_synthetic_player_pool(
     n_players: int,
     weights,
     workers: int | None = None,
     recent_exclude: set[int] | None = None,
+    progress_callback=None,
 ) -> dict[tuple[int, ...], int]:
     """
     HM/현실 분포 기반으로 '가상의 플레이어들'이 어떤 조합을 샀는지 풀 구성.
@@ -652,6 +750,7 @@ def build_synthetic_player_pool(
     - weights : 번호 인기 분포(길이 45, 합=1)
     - workers : 프로세스 개수 (None이면 단일 프로세스, 보통 36으로 사용)
     - recent_exclude: 최근 N회 출현 번호 등, 회피하고 싶은 번호 세트
+    - progress_callback: 진행률 콜백 함수 (percent, message)
     - return  : { (n1,..,n6): 그 조합을 산 사람 수 }
     """
     if weights is None:
@@ -695,10 +794,22 @@ def build_synthetic_player_pool(
             futures.append(
                 ex.submit(_build_synthetic_player_pool_chunk, n_i, w, recent_exclude)
             )
+
+        # 진행률 추적
+        completed = 0
+        total_workers = len(futures)
+
         for fut in as_completed(futures):
             part = fut.result()
             for key, cnt in part.items():
                 pool[key] = pool.get(key, 0) + cnt
+
+            # 진행률 업데이트
+            completed += 1
+            if progress_callback:
+                percent = 10 + int((completed / total_workers) * 20)  # 10~30%
+                progress_callback(percent, f"가상 플레이어 풀 생성 중... {completed}/{total_workers} 워커")
+
     return pool
 
 

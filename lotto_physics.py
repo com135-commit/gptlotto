@@ -1939,6 +1939,54 @@ def generate_physics_3d(
     return results
 
 
+# MQLE 점수 계산 워커 함수 (멀티프로세싱용)
+def _score_mqle_candidate(cand, history_weights, history_df, ml_model, ml_weight):
+    """
+    MQLE 점수 계산 (멀티프로세싱 워커)
+
+    Returns:
+        (qh_score, weight_score, pattern_score, ml_score)
+    """
+    from lotto_generators import _qh_score, ml_score_set
+
+    # 양자조화 점수
+    qh_score = _qh_score(cand, history_weights)
+
+    # 가중치 점수
+    if history_weights is not None:
+        weight_score = sum(history_weights[num - 1] for num in cand) / 6.0
+    else:
+        weight_score = 1.0
+
+    # ML 모델 점수
+    ml_score = 0.0
+    if ml_model is not None:
+        try:
+            ml_score = ml_score_set(cand, ml_model, weights=history_weights, history_df=history_df)
+        except Exception:
+            ml_score = 0.0
+
+    # CSV 패턴 점수
+    pattern_score = 0.0
+    if history_df is not None and not history_df.empty:
+        try:
+            recent_sets = history_df.head(10)
+            pattern_matches = 0
+            for _, row in recent_sets.iterrows():
+                prev_nums = set([
+                    row.get('n1', 0), row.get('n2', 0), row.get('n3', 0),
+                    row.get('n4', 0), row.get('n5', 0), row.get('n6', 0)
+                ])
+                overlap = len(set(cand) & prev_nums)
+                if 2 <= overlap <= 3:
+                    pattern_matches += 1
+            pattern_score = pattern_matches / len(recent_sets) if len(recent_sets) > 0 else 0.0
+        except Exception:
+            pattern_score = 0.0
+
+    return (qh_score, weight_score, pattern_score, ml_score)
+
+
 def generate_physics_3d_ultimate(
     n_sets: int = 1,
     seed: int | None = None,
@@ -1950,13 +1998,14 @@ def generate_physics_3d_ultimate(
     fast_mode: bool = True,
     ml_model=None,
     ml_weight: float = 0.3,
+    use_multiprocessing: bool = True,  # 멀티프로세싱 사용 여부
 ) -> list[list[int]]:
     """
     3D 물리 시뮬레이션 + MQLE 필터 번호 생성 (비시각화)
 
     동작 방식:
     1. 물리 시뮬레이션으로 많은 후보 생성 (n_sets × max_attempts)
-    2. MQLE가 각 후보를 평가하여 점수 부여 (CSV 패턴 활용)
+    2. MQLE가 각 후보를 평가하여 점수 부여 (CSV 패턴 활용) - 멀티프로세싱
     3. 점수가 높은 상위 n_sets개만 선택
 
     Parameters:
@@ -1968,6 +2017,7 @@ def generate_physics_3d_ultimate(
         mqle_threshold: 사용 안 함 (하위 호환용)
         max_attempts: 후보 생성 배수 (기본: 30배)
         fast_mode: 빠른 모드
+        use_multiprocessing: 멀티프로세싱 사용 여부
 
     Returns:
         MQLE 필터링된 로또 번호 세트 리스트
@@ -1999,66 +2049,105 @@ def generate_physics_3d_ultimate(
     from lotto_generators import _qh_score, ml_score_set
 
     print(f"MQLE로 후보 평가 중 (CSV 패턴 활용)...")
-    scored_candidates = []
 
-    for cand in physics_candidates:
-        # 양자조화 점수 (홀짝, 구간 균형)
-        qh_score = _qh_score(cand, history_weights)
+    # ★ 멀티프로세싱으로 점수 계산 (diversity 제외)
+    if use_multiprocessing and len(physics_candidates) > 10:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
 
-        # 다양성 점수 (이미 선택된 것과 겹치는 정도)
-        diversity_penalty = 0
-        for selected in scored_candidates:
-            diversity_penalty += len(set(cand) & set(selected[1]))
+        print(f"  → 멀티프로세싱으로 {len(physics_candidates)}개 후보 점수 계산 (36 코어)")
 
-        # 가중치 점수 (history_weights가 높은 번호 포함 여부)
-        if history_weights is not None:
-            weight_score = sum(history_weights[num - 1] for num in cand) / 6.0
-        else:
-            weight_score = 1.0
+        base_scores = []
+        with ProcessPoolExecutor(max_workers=36) as ex:
+            futures = [ex.submit(_score_mqle_candidate, cand, history_weights,
+                                 history_df, ml_model, ml_weight)
+                      for cand in physics_candidates]
 
-        # ML 모델 점수 (학습된 모델 활용)
-        ml_score = 0.0
-        if ml_model is not None:
-            try:
-                ml_score = ml_score_set(cand, ml_model, weights=history_weights, history_df=history_df)
-            except Exception:
-                ml_score = 0.0
+            for fut in as_completed(futures):
+                base_scores.append(fut.result())
 
-        # CSV 패턴 점수 (history_df 활용)
-        pattern_score = 0.0
-        if history_df is not None and not history_df.empty:
-            try:
-                # 최근 10회 패턴과의 유사도 계산
-                recent_sets = history_df.head(10)
-                pattern_matches = 0
-                for _, row in recent_sets.iterrows():
-                    prev_nums = set([
-                        row.get('n1', 0), row.get('n2', 0), row.get('n3', 0),
-                        row.get('n4', 0), row.get('n5', 0), row.get('n6', 0)
-                    ])
-                    overlap = len(set(cand) & prev_nums)
-                    # 2-3개 겹치는 게 적당 (0-1개나 4개 이상은 감점)
-                    if 2 <= overlap <= 3:
-                        pattern_matches += 1
-                pattern_score = pattern_matches / len(recent_sets) if len(recent_sets) > 0 else 0.0
-            except Exception:
-                pattern_score = 0.0
-
-        # ML 가중치 정규화
+        # diversity 계산 및 최종 점수 (순차)
+        scored_candidates = []
         ml_w = float(max(0.0, min(1.0, ml_weight)))
-
-        # 최종 점수 (MQLE 스타일 + ML + CSV 패턴)
-        # ML 가중치만큼 ML 점수 사용, 나머지를 기존 방식으로 분배
         remaining_weight = 1.0 - ml_w
-        total_score = (
-            remaining_weight * 0.5 * qh_score +           # 양자조화
-            remaining_weight * 0.2 * weight_score +       # 가중치
-            remaining_weight * 0.2 * pattern_score +      # CSV 패턴
-            remaining_weight * 0.1 * (-diversity_penalty / 10.0) +  # 다양성
-            ml_w * ml_score  # ML 점수
-        )
 
-        scored_candidates.append((total_score, cand))
+        for idx, (cand, (qh_score, weight_score, pattern_score, ml_score)) in enumerate(zip(physics_candidates, base_scores)):
+            # 다양성 점수
+            diversity_penalty = 0
+            for selected_score, selected_cand in scored_candidates:
+                diversity_penalty += len(set(cand) & set(selected_cand))
+
+            # 최종 점수
+            total_score = (
+                remaining_weight * 0.5 * qh_score +
+                remaining_weight * 0.2 * weight_score +
+                remaining_weight * 0.2 * pattern_score +
+                remaining_weight * 0.1 * (-diversity_penalty / 10.0) +
+                ml_w * ml_score
+            )
+
+            scored_candidates.append((total_score, cand))
+    else:
+        # 기존 순차 방식
+        scored_candidates = []
+
+        for cand in physics_candidates:
+            # 양자조화 점수 (홀짝, 구간 균형)
+            qh_score = _qh_score(cand, history_weights)
+
+            # 다양성 점수 (이미 선택된 것과 겹치는 정도)
+            diversity_penalty = 0
+            for selected in scored_candidates:
+                diversity_penalty += len(set(cand) & set(selected[1]))
+
+            # 가중치 점수 (history_weights가 높은 번호 포함 여부)
+            if history_weights is not None:
+                weight_score = sum(history_weights[num - 1] for num in cand) / 6.0
+            else:
+                weight_score = 1.0
+
+            # ML 모델 점수 (학습된 모델 활용)
+            ml_score = 0.0
+            if ml_model is not None:
+                try:
+                    ml_score = ml_score_set(cand, ml_model, weights=history_weights, history_df=history_df)
+                except Exception:
+                    ml_score = 0.0
+
+            # CSV 패턴 점수 (history_df 활용)
+            pattern_score = 0.0
+            if history_df is not None and not history_df.empty:
+                try:
+                    # 최근 10회 패턴과의 유사도 계산
+                    recent_sets = history_df.head(10)
+                    pattern_matches = 0
+                    for _, row in recent_sets.iterrows():
+                        prev_nums = set([
+                            row.get('n1', 0), row.get('n2', 0), row.get('n3', 0),
+                            row.get('n4', 0), row.get('n5', 0), row.get('n6', 0)
+                        ])
+                        overlap = len(set(cand) & prev_nums)
+                        # 2-3개 겹치는 게 적당 (0-1개나 4개 이상은 감점)
+                        if 2 <= overlap <= 3:
+                            pattern_matches += 1
+                    pattern_score = pattern_matches / len(recent_sets) if len(recent_sets) > 0 else 0.0
+                except Exception:
+                    pattern_score = 0.0
+
+            # ML 가중치 정규화
+            ml_w = float(max(0.0, min(1.0, ml_weight)))
+
+            # 최종 점수 (MQLE 스타일 + ML + CSV 패턴)
+            # ML 가중치만큼 ML 점수 사용, 나머지를 기존 방식으로 분배
+            remaining_weight = 1.0 - ml_w
+            total_score = (
+                remaining_weight * 0.5 * qh_score +           # 양자조화
+                remaining_weight * 0.2 * weight_score +       # 가중치
+                remaining_weight * 0.2 * pattern_score +      # CSV 패턴
+                remaining_weight * 0.1 * (-diversity_penalty / 10.0) +  # 다양성
+                ml_w * ml_score  # ML 점수
+            )
+
+            scored_candidates.append((total_score, cand))
 
     # 3단계: 점수 높은 순으로 정렬하여 상위 n_sets개 선택
     scored_candidates.sort(reverse=True, key=lambda x: x[0])
