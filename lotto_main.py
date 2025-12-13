@@ -643,9 +643,17 @@ class LottoApp(tk.Tk):
             text=f"로드됨: {os.path.basename(path)} ({len(df)}회)"
         )
 
-        # ML 모델 초기화 (수동 학습 필요)
-        self.ml_model = None
-        self.lbl_ai.config(text="AI 세트 평점: 학습 전 (🎓 ML 학습 시작 버튼 클릭)")
+        # ML 모델 유지 (CSV 로드해도 기존 모델 사용)
+        # 학습 버튼을 눌러야 업데이트됨
+        if self.ml_model is None:
+            self.lbl_ai.config(text="AI 세트 평점: 학습 전 (🎓 ML 학습 시작 버튼 클릭)")
+        else:
+            # 기존 모델 정보 유지
+            n_models = self.ml_model.get('n_base_models', 0)
+            accuracy = self.ml_model.get('meta_train_accuracy', 0)
+            self.lbl_ai.config(
+                text=f"AI 세트 평점: Stacking ({n_models}+1 모델, 정확도 {accuracy:.2%}) - 학습 버튼으로 업데이트 가능"
+            )
 
     def _train_ml_model(self):
         """ML 모델 학습 (별도 스레드에서 실행)"""
