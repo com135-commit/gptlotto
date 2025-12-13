@@ -84,13 +84,14 @@ class StackingModelWrapper:
     Stacking 앙상블 모델을 sklearn 인터페이스로 래핑
 
     배치 예측을 최적화하여 10배 이상 속도 향상:
-    - 10개 베이스 모델을 한 번에 배치 예측
+    - N개 베이스 모델을 한 번에 배치 예측 (병렬)
     - 메타 모델로 최종 예측
     - pickle 직렬화 지원
     """
     def __init__(self, base_models, meta_model):
         self.base_models = base_models
         self.meta_model = meta_model
+        self.n_base_models = len(base_models)
 
     def predict_proba(self, X):
         """
@@ -102,21 +103,91 @@ class StackingModelWrapper:
         Returns:
             (N, 2) 확률 배열 [[P(class=0), P(class=1)], ...]
         """
-        # Level 0: 10개 베이스 모델 병렬 배치 예측 ⚡
+        # Level 0: N개 베이스 모델 병렬 배치 예측 ⚡
         from joblib import Parallel, delayed
 
-        # 10개 모델을 병렬로 예측 (10 CPU 코어 사용)
-        base_preds_list = Parallel(n_jobs=10, prefer="threads")(
+        # N개 모델을 병렬로 예측 (동적 CPU 코어 사용)
+        base_preds_list = Parallel(n_jobs=self.n_base_models, prefer="threads")(
             delayed(lambda m: m.predict_proba(X)[:, 1])(model)
             for model in self.base_models
         )
-        base_preds = np.column_stack(base_preds_list)  # Shape: (N, 10)
+        base_preds = np.column_stack(base_preds_list)  # Shape: (N, n_base_models)
 
         # 메타 입력: 베이스 예측 + 정규화된 원본 특징
-        meta_input = np.hstack([base_preds, X])  # Shape: (N, 60)
+        meta_input = np.hstack([base_preds, X])  # Shape: (N, n_base_models+50)
 
         # Level 1: 메타 모델 최종 예측
         return self.meta_model.predict_proba(meta_input)  # Shape: (N, 2)
+
+
+class DummyMetaModel:
+    """
+    메타 모델 역할을 하는 더미 클래스 (25개 앙상블용)
+    실제로는 베이스 모델들의 평균만 계산
+    """
+    def __init__(self):
+        from sklearn.base import BaseEstimator, ClassifierMixin
+        self.classes_ = np.array([0, 1])
+
+    def fit(self, X, y):
+        return self
+
+    def predict_proba(self, X):
+        """X는 이미 베이스 모델들의 평균 확률"""
+        if X.ndim == 1:
+            X = X.reshape(-1, 1)
+        # 이진 분류이므로 [1-p, p] 형태로 반환
+        probs = np.column_stack([1 - X, X])
+        return probs
+
+    def predict(self, X):
+        probs = self.predict_proba(X)
+        return (probs[:, 1] > 0.5).astype(int)
+
+
+class EnsembleWrapper:
+    """
+    25개 MLP 앙상블을 Stacking처럼 동작하도록 래핑
+    StackingModelWrapper와 호환되는 인터페이스 제공
+    """
+    def __init__(self, base_models, meta_model, mu, sigma):
+        self.base_models = base_models
+        self.meta_model = meta_model
+        self.mu = mu
+        self.sigma = sigma
+        self.n_base_models = len(base_models)
+
+    def predict_proba(self, X_raw):
+        """
+        배치 예측 (lotto_generators.ml_score_sets_batch 호환)
+
+        Args:
+            X_raw: (n_samples, n_features) - 정규화 안 된 원본 특징
+
+        Returns:
+            (n_samples, 2) - [1-p, p] 형태의 확률
+        """
+        # 정규화
+        X_norm = (X_raw - self.mu) / self.sigma
+
+        # N개 모델의 평균 예측 (병렬 처리)
+        from joblib import Parallel, delayed
+
+        all_probs = Parallel(n_jobs=self.n_base_models, prefer="threads")(
+            delayed(lambda m: m.predict_proba(X_norm)[:, 1])(model)
+            for model in self.base_models
+        )
+
+        # 평균
+        avg_probs = np.mean(all_probs, axis=0)
+
+        # [1-p, p] 형태로 변환
+        return np.column_stack([1 - avg_probs, avg_probs])
+
+    def predict(self, X_raw):
+        """예측 (확률 > 0.5 → 1)"""
+        probs = self.predict_proba(X_raw)
+        return (probs[:, 1] > 0.5).astype(int)
 
 
 class LottoApp(tk.Tk):
@@ -610,7 +681,7 @@ class LottoApp(tk.Tk):
             # ===========================
             # 1단계: K-Fold 앙상블 학습
             # ===========================
-            print("\n[1단계] K-Fold 앙상블 학습 (10개 모델)")
+            print("\n[1단계] K-Fold 앙상블 학습 (25개 모델)")
 
             # 학습 데이터 준비
             pos_sets = []
@@ -691,17 +762,17 @@ class LottoApp(tk.Tk):
             import os
             import time
 
-            # 각 프로세스가 4코어씩 사용하도록 설정 (10 프로세스 × 4 코어 = 40 코어)
-            os.environ['OMP_NUM_THREADS'] = '4'
-            os.environ['MKL_NUM_THREADS'] = '4'
-            os.environ['OPENBLAS_NUM_THREADS'] = '4'
+            # 각 프로세스가 2코어씩 사용하도록 설정 (25 프로세스 × 2 코어 = 50 코어)
+            os.environ['OMP_NUM_THREADS'] = '2'
+            os.environ['MKL_NUM_THREADS'] = '2'
+            os.environ['OPENBLAS_NUM_THREADS'] = '2'
 
-            skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+            skf = StratifiedKFold(n_splits=25, shuffle=True, random_state=42)
 
             print(f"   K-Fold 앙상블 학습 시작")
-            print(f"   [진짜 병렬 모드] joblib loky backend로 10개 프로세스 동시 실행")
-            print(f"   각 프로세스 4코어 사용 → 총 40코어 활용")
-            print(f"   예상 시간: 20-30초 (기존 180초 대비 9배 빠름)")
+            print(f"   [진짜 병렬 모드] joblib loky backend로 25개 프로세스 동시 실행")
+            print(f"   각 프로세스 2코어 사용 → 총 50코어 활용")
+            print(f"   예상 시간: 40-60초")
 
             start_time = time.time()
 
@@ -722,8 +793,8 @@ class LottoApp(tk.Tk):
             )
 
             # loky backend 명시적 사용 (진짜 멀티프로세싱)
-            print(f"   loky backend 시작... (10개 독립 프로세스 생성)")
-            with parallel_backend('loky', n_jobs=10):
+            print(f"   loky backend 시작... (25개 독립 프로세스 생성)")
+            with parallel_backend('loky', n_jobs=25):
                 cv_results = cross_validate(
                     base_model, Xn, y,
                     cv=skf,
@@ -787,7 +858,7 @@ class LottoApp(tk.Tk):
                 preds = model.predict_proba(Xn[val_idx])[:, 1]
                 meta_predictions[val_idx, fold_idx - 1] = preds
 
-            # 메타 특징 = 10개 예측 + 50개 원본 특징 (= 60개)
+            # 메타 특징 = 25개 예측 + 50개 원본 특징 (= 75개)
             X_meta = np.hstack([meta_predictions, Xn])
             print(f"   메타 특징: {X_meta.shape}")
 
