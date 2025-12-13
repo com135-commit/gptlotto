@@ -1599,12 +1599,17 @@ class LottoApp(tk.Tk):
         folder = filedialog.askdirectory()
         if not folder:
             return
-        per_csv = os.path.join(folder, "lotto_per_set.csv")
-        agg_csv = os.path.join(folder, "lotto_aggregate.csv")
+
+        # 날짜/시간 포함 파일명
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y년%m월%d일_%H시%M분')
+
+        per_csv = os.path.join(folder, f"lotto_per_set_{timestamp}.csv")
+        agg_csv = os.path.join(folder, f"lotto_aggregate_{timestamp}.csv")
         self.per_set_df.to_csv(per_csv, index=False)
         self.agg_df.to_csv(agg_csv, index=False)
         try:
-            xlsx = os.path.join(folder, "lotto_results.xlsx")
+            xlsx = os.path.join(folder, f"lotto_results_{timestamp}.xlsx")
             with pd.ExcelWriter(xlsx, engine="xlsxwriter") as writer:
                 self.per_set_df.to_excel(
                     writer, sheet_name="PerSet", index=False
