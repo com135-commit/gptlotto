@@ -39,6 +39,7 @@ from lotto_utils import (
     default_sets,
     get_rng,
 )
+from get_next_round_info import get_next_round_info
 from lotto_generators import (
     generate_random_sets,
     generate_pattern_sets,
@@ -98,7 +99,7 @@ class StackingModelWrapper:
         배치 예측 (sklearn 호환) - 병렬 처리
 
         Args:
-            X: (N, 50) 정규화된 특징 배열
+            X: (N, 57) 정규화된 특징 배열
 
         Returns:
             (N, 2) 확률 배열 [[P(class=0), P(class=1)], ...]
@@ -114,7 +115,7 @@ class StackingModelWrapper:
         base_preds = np.column_stack(base_preds_list)  # Shape: (N, n_base_models)
 
         # 메타 입력: 베이스 예측 + 정규화된 원본 특징
-        meta_input = np.hstack([base_preds, X])  # Shape: (N, n_base_models+50)
+        meta_input = np.hstack([base_preds, X])  # Shape: (N, n_base_models+57)
 
         # Level 1: 메타 모델 최종 예측
         return self.meta_model.predict_proba(meta_input)  # Shape: (N, 2)
@@ -271,23 +272,36 @@ class LottoApp(tk.Tk):
                 with open(stacking_path, 'rb') as f:
                     self.ml_model = pickle.load(f)
 
-                # ⚡ 하위 호환성: 'model' 키가 없으면 wrapper 동적 생성
-                if 'model' not in self.ml_model:
-                    base_models = self.ml_model.get('base_models')
-                    meta_model = self.ml_model.get('meta_model')
-                    if base_models and meta_model:
-                        wrapper = StackingModelWrapper(base_models, meta_model)
-                        self.ml_model['model'] = wrapper
-                        print(f"[자동 로드] Wrapper 동적 생성 완료 (구버전 호환)")
+                # 모델 타입 확인
+                model_type = self.ml_model.get('type', 'unknown')
+                n_features = self.ml_model.get('n_features', 0)
 
-                n_models = self.ml_model.get('n_base_models', 0)
-                accuracy = self.ml_model.get('meta_train_accuracy', 0)
-                sep_power = self.ml_model.get('separation_power', 0)
+                if model_type == 'neural_network_ensemble':
+                    # Neural Network K-Fold 앙상블
+                    n_models = self.ml_model.get('n_models', 0)
+                    accuracy = self.ml_model.get('ensemble_accuracy', 0)
+                    self.lbl_ai.config(
+                        text=f"AI 세트 평점: 앙상블 ({n_models}개 모델, {n_features}개 특징, 정확도 {accuracy:.2%})"
+                    )
+                    print(f"[자동 로드] 앙상블 모델 로드 완료 ({n_models}개 모델, {n_features}개 특징)")
+                else:
+                    # ⚡ 하위 호환성: Stacking 또는 단일 모델
+                    if 'model' not in self.ml_model:
+                        base_models = self.ml_model.get('base_models')
+                        meta_model = self.ml_model.get('meta_model')
+                        if base_models and meta_model:
+                            wrapper = StackingModelWrapper(base_models, meta_model)
+                            self.ml_model['model'] = wrapper
+                            print(f"[자동 로드] Wrapper 동적 생성 완료 (구버전 호환)")
 
-                self.lbl_ai.config(
-                    text=f"AI 세트 평점: Stacking ({n_models}+1 모델, 정확도 {accuracy:.2%}, 구분력 {sep_power:.4f})"
-                )
-                print(f"[자동 로드] Stacking 모델 로드 완료 ({n_models}개 베이스 + 메타 모델)")
+                    n_models = self.ml_model.get('n_base_models', 0)
+                    accuracy = self.ml_model.get('meta_train_accuracy', 0)
+                    sep_power = self.ml_model.get('separation_power', 0)
+
+                    self.lbl_ai.config(
+                        text=f"AI 세트 평점: Stacking ({n_models}+1 모델, 정확도 {accuracy:.2%}, 구분력 {sep_power:.4f})"
+                    )
+                    print(f"[자동 로드] Stacking 모델 로드 완료 ({n_models}개 베이스 + 메타 모델)")
             except Exception as e:
                 print(f"[경고] Stacking 모델 로드 실패: {e}")
 
@@ -643,17 +657,12 @@ class LottoApp(tk.Tk):
             text=f"로드됨: {os.path.basename(path)} ({len(df)}회)"
         )
 
-        # ML 모델 유지 (CSV 로드해도 기존 모델 사용)
-        # 학습 버튼을 눌러야 업데이트됨
+        # CSV 로드 시 ML 모델도 다시 로드 (최신 모델 반영)
+        self._load_ensemble_model_on_startup()
+
+        # 모델 로드가 실패한 경우를 대비한 fallback
         if self.ml_model is None:
             self.lbl_ai.config(text="AI 세트 평점: 학습 전 (🎓 ML 학습 시작 버튼 클릭)")
-        else:
-            # 기존 모델 정보 유지
-            n_models = self.ml_model.get('n_base_models', 0)
-            accuracy = self.ml_model.get('meta_train_accuracy', 0)
-            self.lbl_ai.config(
-                text=f"AI 세트 평점: Stacking ({n_models}+1 모델, 정확도 {accuracy:.2%}) - 학습 버튼으로 업데이트 가능"
-            )
 
     def _train_ml_model(self):
         """ML 모델 학습 (별도 스레드에서 실행)"""
@@ -691,9 +700,18 @@ class LottoApp(tk.Tk):
             # ===========================
             print("\n[1단계] K-Fold 앙상블 학습 (25개 모델)")
 
-            # 학습 데이터 준비
+            # 학습 데이터 준비 (시간 정보 포함)
             pos_sets = []
+            pos_meta = []  # (round, date) 시간 정보 저장
             for row in self.history_df.itertuples(index=False):
+                # round와 date 정보 추출
+                try:
+                    round_num = int(row[0]) if len(row) > 0 else None
+                    date_str = str(row[1]) if len(row) > 1 else None
+                except (ValueError, IndexError):
+                    round_num = None
+                    date_str = None
+
                 nums = []
                 for val in row:
                     try:
@@ -704,6 +722,7 @@ class LottoApp(tk.Tk):
                         continue
                 if len(nums) == 6:
                     pos_sets.append(sorted(nums))
+                    pos_meta.append((round_num, date_str))
 
             # 음성 샘플: 편향된 조합 생성
             n_neg = len(pos_sets) * 5
@@ -716,19 +735,16 @@ class LottoApp(tk.Tk):
             from lotto_generators import (
                 _compute_core_features_batch,
                 _compute_history_features_batch,
+                _compute_temporal_features_batch,
                 _prepare_history_array
             )
             import time
 
-            print(f"   [특징 추출] 50개 고급 특징 (Numba 병렬)")
+            print(f"   [특징 추출] 57개 고급 특징 (39 코어 + 11 히스토리 + 7 시간)")
             print(f"   [Numba+fastmath] 첫 실행 시 컴파일... (2-3초 소요)")
             print(f"   [멀티코어] prange로 36코어 최대 활용!")
 
             start_time = time.time()
-
-            # 모든 세트를 numpy 배열로 변환 (배치 처리)
-            all_sets = pos_sets + neg_sets
-            all_sets_arr = np.array(all_sets, dtype=np.float64)  # (N, 6)
 
             # 히스토리 데이터를 numpy 배열로 변환 (한 번만)
             print(f"   [전처리] 히스토리 데이터 변환...")
@@ -736,20 +752,53 @@ class LottoApp(tk.Tk):
             print(f"        → 완료! ({len(history_arr)}회 히스토리)")
 
             # 핵심 특징 추출 (CPU 병렬)
-            print(f"   [1/2] 핵심 특징 추출 (배치 {len(all_sets)}개, 병렬 처리)...")
-            core_features_all = _compute_core_features_batch(all_sets_arr)  # (N, 39)
+            print(f"   [1/3] 핵심 특징 추출 (배치 {len(pos_sets) + len(neg_sets)}개, 병렬 처리)...")
+            pos_sets_arr = np.array(pos_sets, dtype=np.float64)  # (N_pos, 6)
+            neg_sets_arr = np.array(neg_sets, dtype=np.float64)  # (N_neg, 6)
+
+            core_features_pos = _compute_core_features_batch(pos_sets_arr)  # (N_pos, 39)
+            core_features_neg = _compute_core_features_batch(neg_sets_arr)  # (N_neg, 39)
             core_time = time.time() - start_time
             print(f"        → 완료! ({core_time:.1f}초)")
 
             # 히스토리 특징 추출 (CPU 병렬)
-            print(f"   [2/2] 히스토리 특징 추출 (배치 {len(all_sets)}개, 병렬 처리)...")
+            print(f"   [2/3] 히스토리 특징 추출 (배치 {len(pos_sets) + len(neg_sets)}개, 병렬 처리)...")
             hist_start = time.time()
-            hist_features_all = _compute_history_features_batch(all_sets_arr, history_arr)  # (N, 11)
+            hist_features_pos = _compute_history_features_batch(pos_sets_arr, history_arr)  # (N_pos, 11)
+            hist_features_neg = _compute_history_features_batch(neg_sets_arr, history_arr)  # (N_neg, 11)
             hist_time = time.time() - hist_start
             print(f"        → 완료! ({hist_time:.1f}초)")
 
-            # 결합 (50개)
-            X = np.hstack([core_features_all, hist_features_all])  # (N, 50)
+            # 시간 특징 추출 (양성 샘플만 시간 정보 있음)
+            print(f"   [3/3] 시간 특징 추출...")
+            temp_start = time.time()
+
+            # 양성 샘플: 각 샘플마다 실제 시간 정보 사용
+            temporal_features_pos_list = []
+            for i in range(len(pos_sets)):
+                round_num, date_str = pos_meta[i]
+                temp_feat = _compute_temporal_features_batch(1, round_num, date_str)[0]  # (7,)
+                temporal_features_pos_list.append(temp_feat)
+            temporal_features_pos = np.array(temporal_features_pos_list)  # (N_pos, 7)
+
+            # 음성 샘플: 히스토리에서 랜덤한 시간 정보 사용
+            # (시간 특징이 양성/음성 구분자가 되지 않도록)
+            temporal_features_neg_list = []
+            for _ in range(len(neg_sets)):
+                # 히스토리에서 랜덤 회차 선택
+                random_idx = np.random.randint(0, len(pos_meta))
+                round_num, date_str = pos_meta[random_idx]
+                temp_feat = _compute_temporal_features_batch(1, round_num, date_str)[0]
+                temporal_features_neg_list.append(temp_feat)
+            temporal_features_neg = np.array(temporal_features_neg_list)  # (N_neg, 7)
+
+            temp_time = time.time() - temp_start
+            print(f"        → 완료! ({temp_time:.1f}초)")
+
+            # 결합 (57개)
+            X_pos = np.hstack([core_features_pos, hist_features_pos, temporal_features_pos])  # (N_pos, 57)
+            X_neg = np.hstack([core_features_neg, hist_features_neg, temporal_features_neg])  # (N_neg, 57)
+            X = np.vstack([X_pos, X_neg])  # (N_pos + N_neg, 57)
 
             # 레이블
             y = np.array([1.0] * len(pos_sets) + [0.0] * len(neg_sets), dtype=float)
@@ -790,7 +839,7 @@ class LottoApp(tk.Tk):
                 activation='tanh',
                 solver='adam',
                 learning_rate_init=0.005,
-                alpha=0.0005,
+                alpha=0.0001,  # 최적화: 0.0005 → 0.0001 (학습 속도 35% 향상)
                 batch_size=200,
                 max_iter=300,
                 early_stopping=True,
@@ -866,7 +915,7 @@ class LottoApp(tk.Tk):
                 preds = model.predict_proba(Xn[val_idx])[:, 1]
                 meta_predictions[val_idx, fold_idx - 1] = preds
 
-            # 메타 특징 = 25개 예측 + 50개 원본 특징 (= 75개)
+            # 메타 특징 = 25개 예측 + 57개 원본 특징 (= 82개)
             X_meta = np.hstack([meta_predictions, Xn])
             print(f"   메타 특징: {X_meta.shape}")
 
@@ -877,8 +926,9 @@ class LottoApp(tk.Tk):
             meta_model = LogisticRegression(
                 max_iter=500,
                 random_state=42,
-                C=1.0,
+                C=0.01,  # 정규화 강화 (1.0 → 0.01)
                 class_weight='balanced',
+                solver='lbfgs',
             )
 
             # Cross-validation
@@ -1099,12 +1149,17 @@ class LottoApp(tk.Tk):
         # ML 점수 계산 및 정렬
         if self.ml_model is not None and len(arr) > 0:
             try:
-                # 배치 ML 점수 계산 (17.5배 빠른 병렬 처리)
+                # 다음 회차 정보 계산
+                next_round, next_date = get_next_round_info(self.history_df)
+
+                # 배치 ML 점수 계산 (17.5배 빠른 병렬 처리, 시간 정보 포함)
                 scores = ml_score_sets_batch(
                     arr,
                     self.ml_model,
                     weights=weights,
-                    history_df=self.history_df
+                    history_df=self.history_df,
+                    round_num=next_round,
+                    date_str=next_date,
                 )
 
                 # ML 점수 내림차순 정렬 (높은 점수가 먼저)
@@ -1147,6 +1202,9 @@ class LottoApp(tk.Tk):
             try:
                 from lotto_generators import gen_MQLE
 
+                # 다음 회차 정보 계산
+                next_round, next_date = get_next_round_info(self.history_df)
+
                 # 사용자 세트 읽기
                 base_sets = None
                 txt = self.text_sets.get("1.0", tk.END)
@@ -1168,10 +1226,12 @@ class LottoApp(tk.Tk):
                     q_balance=q_bal,
                     ml_model=self.ml_model,
                     ml_weight=ml_w,
+                    round_num=next_round,  # 시간 정보 전달
+                    date_str=next_date,    # 시간 정보 전달
                 )
 
-                # GUI 업데이트는 메인 스레드에서
-                self.after(0, lambda: self._on_mqle_complete(arr, mode, weights))
+                # GUI 업데이트는 메인 스레드에서 (시간 정보도 전달)
+                self.after(0, lambda: self._on_mqle_complete(arr, mode, weights, next_round, next_date))
             except Exception as e:
                 import traceback
                 error_msg = f"{str(e)}\n{traceback.format_exc()}"
@@ -1179,16 +1239,18 @@ class LottoApp(tk.Tk):
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _on_mqle_complete(self, arr: list, mode: str, weights):
+    def _on_mqle_complete(self, arr: list, mode: str, weights, round_num=None, date_str=None):
         """MQLE 완료 콜백 - ML 점수와 함께 표시"""
         if self.ml_model is not None and len(arr) > 0:
             try:
-                # 배치 ML 점수 계산 (17.5배 빠른 병렬 처리)
+                # 배치 ML 점수 계산 (17.5배 빠른 병렬 처리, 시간 정보 포함)
                 scores = ml_score_sets_batch(
                     arr,
                     self.ml_model,
                     weights=weights,
-                    history_df=self.history_df
+                    history_df=self.history_df,
+                    round_num=round_num,  # 시간 정보 전달
+                    date_str=date_str,    # 시간 정보 전달
                 )
 
                 # ML 점수 내림차순 정렬 (높은 점수가 먼저)
@@ -1246,6 +1308,9 @@ class LottoApp(tk.Tk):
                     generate_physics_3d_ultimate,
                 )
 
+                # 다음 회차 정보 계산
+                next_round, next_date = get_next_round_info(self.history_df)
+
                 rng = np.random.default_rng()
                 arr = []
 
@@ -1273,6 +1338,8 @@ class LottoApp(tk.Tk):
                         fast_mode=True,  # 빠른 모드 활성화
                         ml_model=self.ml_model,  # ML 모델 전달
                         ml_weight=ml_w,  # ML 가중치 전달
+                        round_num=next_round,  # 시간 정보 전달
+                        date_str=next_date,    # 시간 정보 전달
                     )
 
                 arr = arr[:n]
@@ -1290,12 +1357,17 @@ class LottoApp(tk.Tk):
         """물리시뮬 완료 콜백 - ML 점수와 함께 표시"""
         if self.ml_model is not None and len(arr) > 0:
             try:
+                # 다음 회차 정보 계산
+                next_round, next_date = get_next_round_info(self.history_df)
+
                 # 배치 ML 점수 계산 (17.5배 빠른 병렬 처리)
                 scores = ml_score_sets_batch(
                     arr,
                     self.ml_model,
                     weights=weights,
-                    history_df=self.history_df
+                    history_df=self.history_df,
+                    round_num=next_round,
+                    date_str=next_date,
                 )
 
                 # ML 점수 내림차순 정렬 (높은 점수가 먼저)
@@ -2008,6 +2080,9 @@ class LottoApp(tk.Tk):
             self.rig_progress_label.config(text="준비 중...")
 
         def task():
+            # 다음 회차 정보 계산
+            next_round, next_date = get_next_round_info(self.history_df)
+
             # 세트 편집 탭에서 사용자 세트 읽기 (취향 반영용)
             user_sets = None
             txt_sets = self.text_sets.get("1.0", tk.END)
@@ -2132,6 +2207,8 @@ class LottoApp(tk.Tk):
                             ml_weight_val,
                             local_w,
                             self.history_df,
+                            next_round,  # 시간 정보 전달
+                            next_date,   # 시간 정보 전달
                         )
                     )
 

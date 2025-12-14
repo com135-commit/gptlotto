@@ -403,10 +403,16 @@ def gen_ml_guided(
     weights=None,
     exclude_set: set[int] | None = None,
     n_candidates: int = 50,
+    round_num: int | None = None,
+    date_str: str | None = None,
 ) -> list[int]:
     """
     ML 가이드 전략
     ML 점수가 높은 조합을 몬테카를로 방식으로 탐색
+
+    Args:
+        round_num: 예측 대상 회차
+        date_str: 예측 대상 날짜
     """
     if ml_model is None:
         return _generate_weighted_sample(weights or np.ones(45), exclude_set)
@@ -419,11 +425,12 @@ def gen_ml_guided(
     best_set = None
     best_score = -1
 
-    # N개 후보 생성하여 최고 ML 점수 선택
+    # N개 후보 생성하여 최고 ML 점수 선택 (시간 정보 포함)
     for _ in range(n_candidates):
         candidate = _generate_weighted_sample(weights, exclude_set)
         try:
-            score = ml_score_set(candidate, ml_model, weights=weights, history_df=history_df)
+            score = ml_score_set(candidate, ml_model, weights=weights, history_df=history_df,
+                                round_num=round_num, date_str=date_str)
             if score > best_score:
                 best_score = score
                 best_set = candidate

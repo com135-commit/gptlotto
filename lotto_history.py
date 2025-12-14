@@ -13,6 +13,19 @@ import pandas as pd
 
 def load_history_csv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
+
+    # 1. round, date 컬럼 찾기 (선택적)
+    meta_cols = []
+    for k in ["round", "date"]:
+        found = None
+        for c in df.columns:
+            if c.lower() == k:
+                found = c
+                break
+        if found:
+            meta_cols.append(found)
+
+    # 2. n1~n6 컬럼 찾기 (필수)
     ncols: list[str] = []
     for k in ["n1", "n2", "n3", "n4", "n5", "n6"]:
         found = None
@@ -23,10 +36,23 @@ def load_history_csv(path: str) -> pd.DataFrame:
         if not found:
             raise ValueError("CSV에 n1..n6 컬럼이 필요합니다.")
         ncols.append(found)
-    out = df[ncols].copy()
-    out = out.apply(pd.to_numeric, errors="coerce").dropna().astype(int)
-    for c in out.columns:
-        out = out[(out[c] >= 1) & (out[c] <= 45)]
+
+    # 3. 메타 컬럼 + 숫자 컬럼 결합
+    all_cols = meta_cols + ncols
+    out = df[all_cols].copy()
+
+    # 4. n1~n6만 숫자 검증 (round/date는 그대로 유지)
+    num_df = out[ncols].apply(pd.to_numeric, errors="coerce").dropna().astype(int)
+
+    # 5. 유효한 행만 유지
+    out = out.loc[num_df.index].reset_index(drop=True)
+    out[ncols] = num_df.reset_index(drop=True)
+
+    # 6. 1~45 범위 검증
+    for c in ncols:
+        mask = (out[c] >= 1) & (out[c] <= 45)
+        out = out[mask]
+
     return out.reset_index(drop=True)
 
 

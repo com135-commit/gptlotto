@@ -1940,7 +1940,7 @@ def generate_physics_3d(
 
 
 # MQLE 점수 계산 워커 함수 (멀티프로세싱용)
-def _score_mqle_candidate(cand, history_weights, history_df, ml_model, ml_weight):
+def _score_mqle_candidate(cand, history_weights, history_df, ml_model, ml_weight, round_num=None, date_str=None):
     """
     MQLE 점수 계산 (멀티프로세싱 워커)
 
@@ -1962,7 +1962,7 @@ def _score_mqle_candidate(cand, history_weights, history_df, ml_model, ml_weight
     ml_score = 0.0
     if ml_model is not None:
         try:
-            ml_score = ml_score_set(cand, ml_model, weights=history_weights, history_df=history_df)
+            ml_score = ml_score_set(cand, ml_model, weights=history_weights, history_df=history_df, round_num=round_num, date_str=date_str)
         except Exception:
             ml_score = 0.0
 
@@ -1999,6 +1999,8 @@ def generate_physics_3d_ultimate(
     ml_model=None,
     ml_weight: float = 0.3,
     use_multiprocessing: bool = True,  # 멀티프로세싱 사용 여부
+    round_num: int | None = None,  # 시간 정보
+    date_str: str | None = None,   # 시간 정보
 ) -> list[list[int]]:
     """
     3D 물리 시뮬레이션 + MQLE 필터 번호 생성 (비시각화)
@@ -2059,7 +2061,7 @@ def generate_physics_3d_ultimate(
         base_scores = []
         with ProcessPoolExecutor(max_workers=36) as ex:
             futures = [ex.submit(_score_mqle_candidate, cand, history_weights,
-                                 history_df, ml_model, ml_weight)
+                                 history_df, ml_model, ml_weight, round_num, date_str)
                       for cand in physics_candidates]
 
             for fut in as_completed(futures):
@@ -2109,7 +2111,7 @@ def generate_physics_3d_ultimate(
             ml_score = 0.0
             if ml_model is not None:
                 try:
-                    ml_score = ml_score_set(cand, ml_model, weights=history_weights, history_df=history_df)
+                    ml_score = ml_score_set(cand, ml_model, weights=history_weights, history_df=history_df, round_num=round_num, date_str=date_str)
                 except Exception:
                     ml_score = 0.0
 

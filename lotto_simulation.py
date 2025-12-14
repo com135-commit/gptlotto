@@ -649,11 +649,17 @@ def _filter_ticket_pool_chunk(
     ml_weight: float,
     weights,
     history_df,
+    round_num: int | None = None,
+    date_str: str | None = None,
 ) -> list[tuple[list[int], float, float]]:
     """
     ticket_pool의 일부 조합들을 필터링하는 멀티프로세스 워커 함수
 
     ⚡ 최적화: 배치 처리로 ML 점수 계산 속도 10-1000배 향상
+
+    Args:
+        round_num: 예측 대상 회차 (예: 1203)
+        date_str: 예측 대상 날짜 (예: "2025.12.20")
 
     Returns:
         ML 사용 시: [(combo, lam, combined_score), ...]
@@ -681,6 +687,7 @@ def _filter_ticket_pool_chunk(
         from lotto_generators import (
             _compute_core_features_batch,
             _compute_history_features_batch,
+            _compute_temporal_features_batch,
             _prepare_history_array
         )
         import numpy as np
@@ -705,7 +712,8 @@ def _filter_ticket_pool_chunk(
             # 배치 특징 추출 (Numba 병렬)
             core_features = _compute_core_features_batch(combos_arr)  # (N, 39)
             hist_features = _compute_history_features_batch(combos_arr, history_arr)  # (N, 11)
-            X = np.hstack([core_features, hist_features])  # (N, 50)
+            temporal_features = _compute_temporal_features_batch(len(combos_arr), round_num, date_str)  # (N, 7)
+            X = np.hstack([core_features, hist_features, temporal_features])  # (N, 57)
 
             # 정규화
             mu = ml_model['mu']
@@ -841,6 +849,8 @@ def _rigged_candidate_chunk(
     ml_model=None,
     ml_weight: float = 0.0,
     history_df=None,
+    round_num: int | None = None,
+    date_str: str | None = None,
 ) -> list[tuple[list[int], float]]:
     """
     n_samples 만큼 후보 당첨 번호를 생성하고,
@@ -851,6 +861,10 @@ def _rigged_candidate_chunk(
     - ml_model이 있으면 ML 점수도 함께 계산
     - ml_weight로 ML 점수의 중요도 조절
     - ML 점수가 높은 번호를 우선 선택
+
+    Args:
+        round_num: 예측 대상 회차
+        date_str: 예측 대상 날짜
     """
     if weights is None:
         w = None
@@ -889,9 +903,9 @@ def _rigged_candidate_chunk(
         for draw in draws_list:
             lam = estimate_expected_winners_from_pool(draw, ticket_pool, scale_factor)
             if tmin <= lam <= tmax:
-                # ML 점수 계산
+                # ML 점수 계산 (시간 정보 포함)
                 try:
-                    ml_score = ml_score_set(draw, ml_model, weights, history_df)
+                    ml_score = ml_score_set(draw, ml_model, weights, history_df, round_num, date_str)
                 except Exception:
                     ml_score = 0.5  # 기본값
 

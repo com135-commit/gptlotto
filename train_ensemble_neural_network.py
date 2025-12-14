@@ -22,9 +22,18 @@ print(f"   전체 데이터: {len(history_df)}회")
 # 2. 학습 데이터 준비
 print("\n[2] 학습 데이터 준비")
 
-# 양성 샘플: 진짜 로또 번호
+# 양성 샘플: 진짜 로또 번호 (시간 정보 포함)
 pos_sets = []
+pos_meta = []  # (round, date) 시간 정보 저장
 for row in history_df.itertuples(index=False):
+    # round와 date 정보 추출
+    try:
+        round_num = int(row[0]) if len(row) > 0 else None
+        date_str = str(row[1]) if len(row) > 1 else None
+    except (ValueError, IndexError):
+        round_num = None
+        date_str = None
+
     nums = []
     for val in row:
         try:
@@ -35,6 +44,7 @@ for row in history_df.itertuples(index=False):
             continue
     if len(nums) == 6:
         pos_sets.append(sorted(nums))
+        pos_meta.append((round_num, date_str))
 
 # 음성 샘플: 편향된 조합 (5배 생성)
 n_neg = len(pos_sets) * 5
@@ -66,17 +76,20 @@ for _ in range(n_neg):
         # 패턴 생성 실패 시 완전 랜덤
         neg_sets.append(generate_random_sets(1, True, np.ones(45), None)[0])
 
-# 특징 추출
+# 특징 추출 (57개 특징: 39개 코어 + 11개 히스토리 + 7개 시간)
 weights = np.ones(45)
 X_list = []
 y_list = []
 
-for s in pos_sets:
-    X_list.append(_set_features(s, weights, history_df))
+# 양성 샘플 (시간 정보 포함)
+for i, s in enumerate(pos_sets):
+    round_num, date_str = pos_meta[i]
+    X_list.append(_set_features(s, weights, history_df, round_num, date_str))
     y_list.append(1.0)
 
+# 음성 샘플 (시간 정보 없음 - 가상 조합이므로)
 for s in neg_sets:
-    X_list.append(_set_features(s, weights, history_df))
+    X_list.append(_set_features(s, weights, history_df, None, None))
     y_list.append(0.0)
 
 X = np.vstack(X_list)

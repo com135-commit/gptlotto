@@ -22,6 +22,7 @@ __all__ = [
     '_compute_core_features_batch',
     '_compute_history_features',
     '_compute_history_features_batch',
+    '_compute_temporal_features_batch',
     '_prepare_history_array',
     'train_ml_scorer',
 ]
@@ -1498,18 +1499,110 @@ def gen_QH(n_sets: int, weights=None, exclude_set: set[int] | None = None):
 
 
 # ------------------ AI 세트 평점용 특징/모델 ------------------
+def _compute_temporal_features(
+    round_num: int | None,
+    date_str: str | None,
+    history_df: pd.DataFrame | None,
+) -> np.ndarray:
+    """
+    시간 기반 특징 계산 (7개)
+
+    시간적 패턴: 요일, 월, 계절, 회차 등
+
+    Args:
+        round_num: 현재 회차 번호
+        date_str: 날짜 문자열 (예: "2025.12.13")
+        history_df: 히스토리 DataFrame
+
+    Returns:
+        (7,) 시간 특징 벡터
+    """
+    import math
+    from datetime import datetime
+
+    # 기본값 (시간 정보 없을 때)
+    if date_str is None or round_num is None:
+        return np.zeros(7, dtype=np.float64)
+
+    try:
+        # 날짜 파싱
+        date_obj = datetime.strptime(date_str, "%Y.%m.%d")
+
+        # 1-2. 요일 (sin/cos 인코딩)
+        # 0=월요일, 6=일요일
+        weekday = date_obj.weekday()
+        f_weekday_sin = math.sin(2 * math.pi * weekday / 7)
+        f_weekday_cos = math.cos(2 * math.pi * weekday / 7)
+
+        # 3-4. 월 (sin/cos 인코딩)
+        month = date_obj.month
+        f_month_sin = math.sin(2 * math.pi * month / 12)
+        f_month_cos = math.cos(2 * math.pi * month / 12)
+
+        # 5. 계절 (0=봄, 1=여름, 2=가을, 3=겨울)
+        season = (month % 12) // 3  # 3,4,5월=봄, 6,7,8=여름, 9,10,11=가을, 12,1,2=겨울
+        f_season = season / 3.0  # 0.0 ~ 1.0
+
+        # 6. 회차 번호 정규화
+        # 1~1500 범위로 가정
+        f_round = round_num / 1500.0
+
+        # 7. 연중 몇 번째 주 (정규화)
+        # 1년 = 52주
+        week_of_year = date_obj.isocalendar()[1]
+        f_week_of_year = week_of_year / 52.0
+
+        return np.array([
+            f_weekday_sin, f_weekday_cos,
+            f_month_sin, f_month_cos,
+            f_season,
+            f_round,
+            f_week_of_year
+        ], dtype=np.float64)
+
+    except Exception:
+        # 파싱 실패 시 0으로 반환
+        return np.zeros(7, dtype=np.float64)
+
+
+def _compute_temporal_features_batch(
+    n_samples: int,
+    round_num: int | None,
+    date_str: str | None,
+) -> np.ndarray:
+    """
+    배치로 시간 특징 계산 (N개 샘플 모두 같은 시간 정보 사용)
+
+    Args:
+        n_samples: 샘플 개수
+        round_num: 예측 대상 회차
+        date_str: 예측 대상 날짜
+
+    Returns:
+        (N, 7) 시간 특징 배열
+    """
+    # 단일 시간 특징 계산
+    single_features = _compute_temporal_features(round_num, date_str, None)
+
+    # N개 샘플 모두에 같은 시간 특징 적용
+    return np.tile(single_features, (n_samples, 1))
+
+
 def _set_features(
     nums: list[int],
     weights=None,
     history_df: pd.DataFrame | None = None,
+    round_num: int | None = None,
+    date_str: str | None = None,
 ) -> np.ndarray:
     """
-    번호 조합의 특징 추출 (50개 특징)
+    번호 조합의 특징 추출 (57개 특징)
 
     ⚡ Numba JIT 최적화 적용 → 5-10배 빠름!
 
     - Numba 최적화: 39개 특징 (C 속도)
     - 히스토리 기반: 11개 특징
+    - 시간 기반: 7개 특징 (NEW!)
     """
     nums = sorted(nums)
     arr = np.array(nums, dtype=np.float64)
@@ -1520,8 +1613,11 @@ def _set_features(
     # ===== 히스토리 기반: 11개 특징 =====
     hist_features = _compute_history_features(nums, history_df)
 
-    # 결합 (50개)
-    return np.concatenate([core_features, hist_features])
+    # ===== 시간 기반: 7개 특징 =====
+    temporal_features = _compute_temporal_features(round_num, date_str, history_df)
+
+    # 결합 (57개)
+    return np.concatenate([core_features, hist_features, temporal_features])
 
 
 def train_ml_scorer(
@@ -1561,19 +1657,42 @@ def train_ml_scorer(
         df = history_df.tail(max_rounds)
 
     pos_sets = []
-    for row in df.itertuples(index=False):
-        nums = sorted({int(v) for v in row if 1 <= int(v) <= 45})
+    pos_meta = []  # (round, date) 시간 정보 저장
+
+    # DataFrame 컬럼 확인
+    has_round = 'round' in df.columns
+    has_date = 'date' in df.columns
+
+    for idx, row in df.iterrows():
+        # round와 date 정보 추출 (있으면)
+        round_num = row['round'] if has_round else None
+        date_str = row['date'] if has_date else None
+
+        # n1~n6 컬럼 값 추출
+        nums = []
+        for col in df.columns:
+            if col.lower() in ['n1', 'n2', 'n3', 'n4', 'n5', 'n6']:
+                try:
+                    val = int(row[col])
+                    if 1 <= val <= 45:
+                        nums.append(val)
+                except (ValueError, TypeError):
+                    pass
+
+        nums = sorted(nums)
         if len(nums) == 6:
             pos_sets.append(nums)
+            pos_meta.append((round_num, date_str))
     if not pos_sets:
         raise ValueError("유효한 양성 세트가 없습니다.")
 
     X_list = []
     y_list = []
 
-    # 양성 샘플
-    for s in pos_sets:
-        X_list.append(_set_features(s, weights, history_df))
+    # 양성 샘플 (시간 정보 포함)
+    for i, s in enumerate(pos_sets):
+        round_num, date_str = pos_meta[i]
+        X_list.append(_set_features(s, weights, history_df, round_num, date_str))
         y_list.append(1.0)
 
     # 음성 샘플 생성
@@ -1615,8 +1734,9 @@ def train_ml_scorer(
         # 기존 방식: 완전 랜덤만
         neg_sets = generate_random_sets(n_neg, avoid_duplicates=True, weights=weights, exclude_set=None)
 
+    # 음성 샘플 (시간 정보 없음 - 가상 조합이므로)
     for s in neg_sets:
-        X_list.append(_set_features(s, weights, history_df))
+        X_list.append(_set_features(s, weights, history_df, None, None))
         y_list.append(0.0)
 
     X = np.vstack(X_list)
@@ -1695,6 +1815,8 @@ def ml_score_set(
     model: dict | None,
     weights=None,
     history_df: pd.DataFrame | None = None,
+    round_num: int | None = None,
+    date_str: str | None = None,
 ) -> float:
     """
     ML 모델로 번호 조합 점수 계산
@@ -1706,12 +1828,16 @@ def ml_score_set(
     - neural_network: 신경망
     - neural_network_ensemble: K-Fold 앙상블
     - stacking: Stacking 앙상블 (K-Fold + Meta Model)
+
+    Args:
+        round_num: 예측 대상 회차 (예: 1203)
+        date_str: 예측 대상 날짜 (예: "2025.12.20")
     """
     if model is None:
         return 0.0
 
-    # 특징 추출
-    feats = _set_features(nums, weights, history_df)
+    # 특징 추출 (시간 정보 포함)
+    feats = _set_features(nums, weights, history_df, round_num, date_str)
     mu = model.get("mu")
     sig = model.get("sigma")
     if mu is None or sig is None:
@@ -1805,6 +1931,8 @@ def ml_score_sets_batch(
     model: dict | None,
     weights=None,
     history_df: pd.DataFrame | None = None,
+    round_num: int | None = None,
+    date_str: str | None = None,
 ) -> list[float]:
     """
     여러 번호 세트의 ML 점수를 한번에 계산 (배치 처리)
@@ -1816,6 +1944,8 @@ def ml_score_sets_batch(
         model: ML 모델 딕셔너리
         weights: 번호 가중치 (45개)
         history_df: 히스토리 데이터프레임
+        round_num: 예측 대상 회차 (예: 1203)
+        date_str: 예측 대상 날짜 (예: "2025.12.20")
 
     Returns:
         각 세트의 ML 점수 리스트 (0.0 ~ 1.0)
@@ -1823,13 +1953,13 @@ def ml_score_sets_batch(
     if model is None or len(sets) == 0:
         return [0.0] * len(sets)
 
-    # 1. 모든 세트의 특징 추출 (50개 특징 × N개 세트)
+    # 1. 모든 세트의 특징 추출 (57개 특징 × N개 세트, 시간 정보 포함)
     features_list = []
     for nums in sets:
-        feats = _set_features(nums, weights, history_df)
+        feats = _set_features(nums, weights, history_df, round_num, date_str)
         features_list.append(feats)
 
-    X = np.array(features_list)  # Shape: (N, 50)
+    X = np.array(features_list)  # Shape: (N, 57)
 
     # 2. 정규화
     mu = model.get("mu")
@@ -1837,7 +1967,7 @@ def ml_score_sets_batch(
     if mu is None or sig is None:
         return [0.0] * len(sets)
 
-    Xn = (X - mu) / sig  # Shape: (N, 50)
+    Xn = (X - mu) / sig  # Shape: (N, 57)
 
     # 3. 배치 예측
     model_type = model.get("type", "logistic")
@@ -1856,7 +1986,7 @@ def ml_score_sets_batch(
         # Wrapper가 없으면 개별 처리
         scores = []
         for i in range(len(sets)):
-            score = ml_score_set(sets[i], model, weights, history_df)
+            score = ml_score_set(sets[i], model, weights, history_df, round_num, date_str)
             scores.append(score)
         return scores
 
@@ -2298,6 +2428,8 @@ def gen_MQLE(
     q_balance: float = 0.6,
     ml_model: dict | None = None,
     ml_weight: float = 0.3,
+    round_num: int | None = None,
+    date_str: str | None = None,
 ):
     q_balance = float(max(0.0, min(1.0, q_balance)))
     result: list[list[int]] = []
@@ -2428,10 +2560,11 @@ def gen_MQLE(
             except Exception:
                 pass
 
-            # ML 가이드 (ml_model이 있을 때만)
+            # ML 가이드 (ml_model이 있을 때만, 시간 정보 포함)
             if ml_model is not None:
                 try:
-                    cands.append((gen_ml_guided(ml_model, history_df, weights, exclude_set), "classical"))
+                    cands.append((gen_ml_guided(ml_model, history_df, weights, exclude_set,
+                                               round_num=round_num, date_str=date_str), "classical"))
                 except Exception:
                     pass
 
@@ -2468,7 +2601,7 @@ def gen_MQLE(
             div = diversity_penalty(cand)
             rnd = _rng.random()
             ml = (
-                ml_score_set(cand, ml_model, weights=weights, history_df=history_df)
+                ml_score_set(cand, ml_model, weights=weights, history_df=history_df, round_num=round_num, date_str=date_str)
                 if ml_model
                 else 0.0
             )
