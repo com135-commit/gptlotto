@@ -1352,8 +1352,19 @@ def gen_GAPR(
         return gen_GI(n_sets, weights=weights, exclude_set=exclude_set)
 
     gap_list: list[list[int]] = []
-    for row in history_df.itertuples(index=False):
-        nums = sorted(list(row))
+    for _, row in history_df.iterrows():
+        # n1~n6 컬럼만 추출 (round, date 제외)
+        nums = []
+        for col in history_df.columns:
+            if col.lower() in ['n1', 'n2', 'n3', 'n4', 'n5', 'n6']:
+                try:
+                    val = int(row[col])
+                    if 1 <= val <= 45:
+                        nums.append(val)
+                except (ValueError, TypeError):
+                    pass
+
+        nums = sorted(nums)
         if len(nums) != 6:
             continue
         gaps = [nums[i + 1] - nums[i] for i in range(5)]
@@ -2240,8 +2251,18 @@ def gen_QP_entangle(
         base_p = base_p / base_p.sum()
 
     pair_counts = np.zeros((46, 46), dtype=float)
-    for row in history_df.itertuples(index=False):
-        nums = sorted(set(int(x) for x in row if 1 <= int(x) <= 45))
+    for _, row in history_df.iterrows():
+        # n1~n6 컬럼만 추출 (round, date 제외)
+        nums = []
+        for col in history_df.columns:
+            if col.lower() in ['n1', 'n2', 'n3', 'n4', 'n5', 'n6']:
+                try:
+                    val = int(row[col])
+                    if 1 <= val <= 45:
+                        nums.append(val)
+                except (ValueError, TypeError):
+                    pass
+        nums = sorted(set(nums))
         for i in range(len(nums)):
             for j in range(i + 1, len(nums)):
                 a, b = nums[i], nums[j]
