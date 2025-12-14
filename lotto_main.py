@@ -295,7 +295,7 @@ class LottoApp(tk.Tk):
                             print(f"[자동 로드] Wrapper 동적 생성 완료 (구버전 호환)")
 
                     n_models = self.ml_model.get('n_base_models', 0)
-                    accuracy = self.ml_model.get('meta_train_accuracy', 0)
+                    accuracy = self.ml_model.get('meta_train_accuracy', 0) / 100  # 백분율 → 소수
                     sep_power = self.ml_model.get('separation_power', 0)
 
                     self.lbl_ai.config(
