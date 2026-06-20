@@ -1885,11 +1885,11 @@ class PhysicsThread(threading.Thread):
 # ==================== 번호 생성 함수 ====================
 def generate_physics_3d(
     n_sets: int = 1,
-    seed: int | None = None,
+    seed: Optional[int] = None,
     use_cfd: bool = True,
     grid_size: int = 32,
     fast_mode: bool = True,
-) -> list[list[int]]:
+) -> List[List[int]]:
     """
     3D 물리 시뮬레이션으로 로또 번호 생성 (비시각화)
 
@@ -1989,7 +1989,7 @@ def _score_mqle_candidate(cand, history_weights, history_df, ml_model, ml_weight
 
 def generate_physics_3d_ultimate(
     n_sets: int = 1,
-    seed: int | None = None,
+    seed: Optional[int] = None,
     grid_size: int = 32,
     history_df=None,
     history_weights=None,
@@ -1999,9 +1999,9 @@ def generate_physics_3d_ultimate(
     ml_model=None,
     ml_weight: float = 0.3,
     use_multiprocessing: bool = True,  # 멀티프로세싱 사용 여부
-    round_num: int | None = None,  # 시간 정보
-    date_str: str | None = None,   # 시간 정보
-) -> list[list[int]]:
+    round_num: Optional[int] = None,  # 시간 정보
+    date_str: Optional[str] = None,   # 시간 정보
+) -> List[List[int]]:
     """
     3D 물리 시뮬레이션 + MQLE 필터 번호 생성 (비시각화)
 

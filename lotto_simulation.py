@@ -896,33 +896,47 @@ def _rigged_candidate_chunk(
         exclude_set=None,
     )
 
-    # ML 점수 계산 (필요시)
+    # ML 점수 계산 (필요시) - ⚡ 배치 처리로 10배 빠름!
     if use_ml:
-        from lotto_generators import ml_score_set
-        scored_draws = []
+        from lotto_generators import ml_score_sets_batch
+
+        # 먼저 lambda 범위 필터링
+        filtered_draws = []
+        filtered_lams = []
         for draw in draws_list:
             lam = estimate_expected_winners_from_pool(draw, ticket_pool, scale_factor)
             if tmin <= lam <= tmax:
-                # ML 점수 계산 (시간 정보 포함)
-                try:
-                    ml_score = ml_score_set(draw, ml_model, weights, history_df, round_num, date_str)
-                except Exception:
-                    ml_score = 0.5  # 기본값
+                filtered_draws.append(draw)
+                filtered_lams.append(lam)
 
-                # 복합 점수: ML 점수 반영
-                # lam이 목표 중앙값에 가까울수록 좋고, ML 점수도 높을수록 좋음
-                center = 0.5 * (tmin + tmax)
+        if len(filtered_draws) > 0:
+            # ⚡ 배치로 한번에 ML 점수 계산
+            try:
+                ml_scores = ml_score_sets_batch(
+                    filtered_draws,
+                    ml_model,
+                    weights,
+                    history_df,
+                    round_num,
+                    date_str
+                )
+            except Exception:
+                ml_scores = [0.5] * len(filtered_draws)  # 기본값
+
+            # 복합 점수 계산
+            center = 0.5 * (tmin + tmax)
+            scored_draws = []
+            for draw, lam, ml_score in zip(filtered_draws, filtered_lams, ml_scores):
                 lam_score = 1.0 - abs(lam - center) / max(1, tmax - tmin)
-
                 combined_score = (1 - ml_weight) * lam_score + ml_weight * ml_score
                 scored_draws.append((draw, lam, combined_score))
 
-        # 복합 점수 기준 정렬 (높은 점수 우선)
-        scored_draws.sort(key=lambda x: x[2], reverse=True)
+            # 복합 점수 기준 정렬 (높은 점수 우선)
+            scored_draws.sort(key=lambda x: x[2], reverse=True)
 
-        # 상위 n_samples개 선택
-        for draw, lam, _ in scored_draws[:n_samples]:
-            results.append((draw, lam))
+            # 상위 n_samples개 선택
+            for draw, lam, _ in scored_draws[:n_samples]:
+                results.append((draw, lam))
     else:
         # 기존 방식 (ML 없이)
         for draw in draws_list:

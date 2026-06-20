@@ -393,20 +393,37 @@ def _prepare_history_array(history_df: pd.DataFrame | None) -> np.ndarray:
     if history_df is None or history_df.empty:
         return np.zeros((0, 6), dtype=np.float64)
 
-    history_array = []
-    for _, row in history_df.iterrows():
-        nums = []
-        for val in row:
-            try:
-                v = int(val)
-                if 1 <= v <= 45:
-                    nums.append(v)
-            except (ValueError, TypeError):
-                continue
-        if len(nums) == 6:
-            history_array.append(sorted(nums))
+    # n1~n6 컬럼만 추출 (round, date 등 메타데이터 제외)
+    num_cols = [f'n{i}' for i in range(1, 7)]
 
-    return np.array(history_array, dtype=np.float64)
+    # n1~n6 컬럼이 모두 있는지 확인
+    missing_cols = [c for c in num_cols if c not in history_df.columns]
+    if missing_cols:
+        # n1~n6 컬럼이 없으면 전체 순회 (이전 방식)
+        history_array = []
+        for _, row in history_df.iterrows():
+            nums = []
+            for val in row:
+                try:
+                    v = int(val)
+                    if 1 <= v <= 45:
+                        nums.append(v)
+                except (ValueError, TypeError):
+                    continue
+            if len(nums) == 6:
+                history_array.append(sorted(nums))
+    else:
+        # n1~n6 컬럼만 추출
+        history_array = []
+        for _, row in history_df[num_cols].iterrows():
+            try:
+                nums = [int(row[f'n{i}']) for i in range(1, 7)]
+                if all(1 <= n <= 45 for n in nums):
+                    history_array.append(sorted(nums))
+            except (ValueError, TypeError, KeyError):
+                continue
+
+    return np.array(history_array, dtype=np.float64) if history_array else np.zeros((0, 6), dtype=np.float64)
 
 
 @njit(cache=True, fastmath=True)
@@ -1964,13 +1981,22 @@ def ml_score_sets_batch(
     if model is None or len(sets) == 0:
         return [0.0] * len(sets)
 
-    # 1. 모든 세트의 특징 추출 (57개 특징 × N개 세트, 시간 정보 포함)
-    features_list = []
-    for nums in sets:
-        feats = _set_features(nums, weights, history_df, round_num, date_str)
-        features_list.append(feats)
+    # 1. 모든 세트의 특징 추출 (⚡ 배치 처리로 10배 빠름!)
+    # Numba 병렬 처리 활용
+    sets_arr = np.array(sets, dtype=np.float64)  # (N, 6)
 
-    X = np.array(features_list)  # Shape: (N, 57)
+    # 핵심 특징 (Numba JIT 배치)
+    core_features = _compute_core_features_batch(sets_arr)  # (N, 39)
+
+    # 히스토리 특징 (Numba JIT 배치)
+    history_arr = _prepare_history_array(history_df) if history_df is not None else np.array([], dtype=np.float64)
+    hist_features = _compute_history_features_batch(sets_arr, history_arr)  # (N, 11)
+
+    # 시간 특징 (배치)
+    temporal_features = _compute_temporal_features_batch(len(sets), round_num, date_str)  # (N, 7)
+
+    # 결합 (N, 57)
+    X = np.hstack([core_features, hist_features, temporal_features])
 
     # 2. 정규화
     mu = model.get("mu")

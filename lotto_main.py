@@ -30,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 # 서드파티 라이브러리
 import numpy as np
 import pandas as pd
+import requests
 
 # 로또 시뮬레이터 모듈
 from lotto_utils import (
@@ -240,16 +241,19 @@ class LottoApp(tk.Tk):
         self.page_generate = ttk.Frame(self.notebook)
         self.page_sim = ttk.Frame(self.notebook)
         self.page_help = ttk.Frame(self.notebook)
+        self.page_recombine = ttk.Frame(self.notebook)
 
         self.notebook.add(self.page_sets, text="세트 편집")
         self.notebook.add(self.page_generate, text="번호 추출기")
         self.notebook.add(self.page_sim, text="시뮬레이션")
+        self.notebook.add(self.page_recombine, text="번호 재조합")
         self.notebook.add(self.page_help, text="HELP")
 
         self._build_sets_page()
         self._build_generate_page()
         self._build_sim_page()
         self._build_help_page()
+        self._build_recombine_page()
 
         self.text_sets.insert("1.0", sets_to_text(default_sets()))
 
@@ -417,7 +421,7 @@ class LottoApp(tk.Tk):
 
         hist = ttk.LabelFrame(top, text="과거 당첨 데이터(옵션)")
         hist.pack(fill=tk.X, padx=10, pady=8)
-        ttk.Button(hist, text="CSV 불러오기", command=self._load_history).grid(
+        ttk.Button(hist, text="데이터 불러오기 (Excel/CSV)", command=self._load_history).grid(
             row=0, column=0, padx=6, pady=6, sticky="w"
         )
         self.lbl_hist = ttk.Label(hist, text="로드되지 않음")
@@ -641,14 +645,18 @@ class LottoApp(tk.Tk):
 
     def _load_history(self):
         path = filedialog.askopenfilename(
-            filetypes=[("CSV", "*.csv"), ("All", "*.*")]
+            filetypes=[("Excel/CSV", "*.xlsx *.csv"), ("Excel", "*.xlsx"), ("CSV", "*.csv"), ("All", "*.*")]
         )
         if not path:
             return
         try:
-            df = load_history_csv(path)
+            # Excel 또는 CSV 자동 판별
+            if path.lower().endswith('.xlsx'):
+                df = self._load_history_excel(path)
+            else:
+                df = load_history_csv(path)
         except Exception as e:
-            messagebox.showerror("CSV 오류", str(e))
+            messagebox.showerror("파일 오류", str(e))
             return
 
         self.history_df = df
@@ -657,20 +665,249 @@ class LottoApp(tk.Tk):
             text=f"로드됨: {os.path.basename(path)} ({len(df)}회)"
         )
 
-        # CSV 로드 시 ML 모델도 다시 로드 (최신 모델 반영)
+        # 데이터 로드 시 ML 모델도 다시 로드 (최신 모델 반영)
         self._load_ensemble_model_on_startup()
 
         # 모델 로드가 실패한 경우를 대비한 fallback
         if self.ml_model is None:
             self.lbl_ai.config(text="AI 세트 평점: 학습 전 (🎓 ML 학습 시작 버튼 클릭)")
 
+    def _load_history_excel(self, path: str) -> pd.DataFrame:
+        """
+        Excel 파일에서 로또 당첨 데이터 로드
+        형식: 회차, 추첨일, 번호1, 번호2, 번호3, 번호4, 번호5, 번호6, 보너스
+        """
+        import openpyxl
+
+        wb = openpyxl.load_workbook(path)
+        ws = wb.active
+
+        # 헤더 읽기 (첫 번째 행)
+        headers = [cell.value for cell in ws[1]]
+
+        # 데이터 읽기
+        data = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if row[0] is not None:  # 회차가 있는 행만
+                data.append(row)
+
+        wb.close()
+
+        # DataFrame 생성
+        df = pd.DataFrame(data, columns=headers)
+
+        # 디버그: 컬럼명 출력
+        print(f"[DEBUG] Excel 컬럼명: {list(df.columns)}")
+
+        # 컬럼명 정규화 (n1~n6 형식으로 변환)
+        result_df = pd.DataFrame()
+
+        # round, date 컬럼 찾기
+        for col in df.columns:
+            col_str = str(col).strip() if col is not None else ""
+            col_lower = col_str.lower()
+            if '회차' in col_lower or 'round' in col_lower or col_lower == 'no':
+                result_df['round'] = pd.to_numeric(df[col], errors='coerce')
+            elif '추첨일' in col_lower or '날짜' in col_lower or 'date' in col_lower:
+                result_df['date'] = df[col]
+
+        # 번호 컬럼 찾기 - 여러 방법 시도
+        number_cols = []
+
+        # 방법 1: '당첨번호' 컬럼에 문자열로 저장된 경우 (예: "1, 2, 3, 4, 5, 6")
+        winning_num_col = None
+        for col in df.columns:
+            col_str = str(col).strip() if col is not None else ""
+            col_lower = col_str.lower()
+            if '당첨번호' in col_lower or 'winning' in col_lower:
+                winning_num_col = col
+                break
+
+        if winning_num_col is not None:
+            # 첫 번째 행 확인
+            sample = df[winning_num_col].iloc[0] if len(df) > 0 else None
+            if sample is not None:
+                sample_str = str(sample).strip()
+                # 쉼표나 공백으로 구분된 숫자들인지 확인
+                if ',' in sample_str or ' ' in sample_str or '\t' in sample_str or '\n' in sample_str:
+                    print(f"[DEBUG] '당첨번호' 컬럼에서 문자열 파싱 시도: {sample_str[:50]}")
+
+                    # 각 행을 파싱해서 6개 번호 추출
+                    parsed_numbers = []
+                    success_count = 0
+
+                    for idx, row in df.iterrows():
+                        num_str = str(row[winning_num_col]).strip()
+                        # 여러 구분자로 분리 시도
+                        numbers = []
+
+                        # 쉼표, 탭, 줄바꿈 등을 공백으로 치환
+                        num_str = num_str.replace(',', ' ').replace('\t', ' ').replace('\n', ' ')
+                        parts = [p.strip() for p in num_str.split() if p.strip()]
+
+                        try:
+                            numbers = [int(p) for p in parts if p.isdigit() and 1 <= int(p) <= 45]
+                        except:
+                            pass
+
+                        if len(numbers) >= 6:
+                            parsed_numbers.append(numbers[:6])
+                            success_count += 1
+                        else:
+                            parsed_numbers.append([None] * 6)
+
+                    # 성공했으면 result_df에 추가
+                    if success_count > 0:
+                        for i in range(1, 7):
+                            result_df[f'n{i}'] = [nums[i-1] if nums[i-1] is not None else None for nums in parsed_numbers]
+
+                        number_cols = ['parsed']  # 더미 값
+                        print(f"[DEBUG] 문자열 파싱 성공! {success_count}/{len(df)}행")
+
+        # 방법 2: 정확한 패턴 매칭 (번호1, 번호2, ... 또는 n1, n2, ...)
+        if len(number_cols) == 0:
+            for i in range(1, 7):
+                found_col = None
+                for col in df.columns:
+                    col_str = str(col).strip() if col is not None else ""
+                    col_lower = col_str.lower()
+
+                    # 다양한 패턴 체크
+                    if (f'번호{i}' in col_lower or
+                        col_lower == f'n{i}' or
+                        col_str == str(i) or  # 숫자만 있는 경우 (1, 2, 3, ...)
+                        col_lower == f'no{i}' or
+                        col_lower == f'num{i}'):
+                        found_col = col
+                        break
+
+                if found_col is not None:
+                    number_cols.append(found_col)
+
+        # 방법 3: '당첨번호' 다음의 병합된 셀(None) 컬럼 확인
+        if len(number_cols) < 6:
+            print(f"[DEBUG] 패턴 매칭으로 {len(number_cols)}개만 찾음. 병합된 셀 확인 시작...")
+
+            # '당첨번호' 컬럼의 인덱스 찾기
+            winning_idx = None
+            if winning_num_col is not None:
+                winning_idx = list(df.columns).index(winning_num_col)
+
+            if winning_idx is not None:
+                potential_cols = []
+
+                # 먼저 '당첨번호' 컬럼 자체 확인 (첫 번째 번호가 여기 있을 수 있음)
+                try:
+                    test_val = pd.to_numeric(df.iloc[0, winning_idx], errors='coerce')
+                    if not pd.isna(test_val) and 1 <= test_val <= 45:
+                        potential_cols.append(winning_idx)
+                        print(f"[DEBUG] 컬럼 인덱스 {winning_idx} (헤더: '당첨번호'): 값={test_val}")
+                except:
+                    pass
+
+                # '당첨번호' 다음 컬럼들 확인 (최대 7개 더)
+                for i in range(winning_idx + 1, min(winning_idx + 8, len(df.columns))):
+                    col = df.columns[i]
+                    col_str = str(col) if col is not None else ""
+
+                    # None이거나 빈 문자열인 컬럼 (병합된 셀의 경우)
+                    if col is None or col_str.strip() == '' or col_str.lower() == 'none':
+                        # 데이터 행에서 실제 값 확인 (첫 번째 데이터 행)
+                        try:
+                            test_val = pd.to_numeric(df.iloc[0, i], errors='coerce')
+                            if not pd.isna(test_val) and 1 <= test_val <= 45:
+                                potential_cols.append(i)
+                                print(f"[DEBUG] 컬럼 인덱스 {i} (헤더: '{col}'): 값={test_val}")
+                        except Exception as e:
+                            pass
+                    else:
+                        # 헤더가 있는 컬럼이면 중단 (보너스 등)
+                        print(f"[DEBUG] 컬럼 인덱스 {i}에서 헤더 '{col}' 발견, 탐색 중단")
+                        break
+
+                if len(potential_cols) >= 6:
+                    number_cols = potential_cols[:6]
+                    print(f"[DEBUG] 병합된 셀에서 {len(number_cols)}개 찾음: 인덱스 {number_cols}")
+
+        # 방법 4: 위치 기반으로 찾기
+        if len(number_cols) < 6:
+            print(f"[DEBUG] 위치 기반 탐색 시작...")
+
+            # 숫자 컬럼만 추출 (회차, 날짜 제외)
+            numeric_cols = []
+            for idx, col in enumerate(df.columns):
+                col_str = str(col).strip() if col is not None else ""
+                col_lower = col_str.lower()
+
+                # 회차, 날짜, 보너스 컬럼 제외
+                if ('회차' not in col_lower and 'round' not in col_lower and
+                    '날짜' not in col_lower and 'date' not in col_lower and
+                    '추첨일' not in col_lower and 'no' != col_lower and
+                    '보너스' not in col_lower and 'bonus' not in col_lower and
+                    '순위' not in col_lower and '당첨' not in col_lower):
+
+                    # 숫자 데이터가 있는지 확인
+                    try:
+                        test_val = pd.to_numeric(df.iloc[0, idx] if len(df) > 0 else None, errors='coerce')
+                        if not pd.isna(test_val) and 1 <= test_val <= 45:
+                            numeric_cols.append(idx)
+                    except:
+                        pass
+
+            # 처음 6개를 번호로 사용
+            if len(numeric_cols) >= 6:
+                number_cols = numeric_cols[:6]
+                print(f"[DEBUG] 위치 기반으로 {len(number_cols)}개 찾음: 인덱스 {number_cols}")
+            else:
+                raise ValueError(
+                    f"Excel 파일에서 당첨번호 컬럼을 찾을 수 없습니다.\n"
+                    f"컬럼명: {list(df.columns)}\n"
+                    f"당첨번호는 '번호1'~'번호6' 또는 '1'~'6' 형식이거나\n"
+                    f"'당첨번호' 컬럼에 쉼표로 구분된 숫자 문자열이어야 합니다."
+                )
+
+        # n1~n6 컬럼 추가 (문자열 파싱으로 이미 설정된 경우 건너뜀)
+        if number_cols != ['parsed']:
+            for i, col in enumerate(number_cols, 1):
+                # 인덱스인지 컬럼명인지 확인
+                if isinstance(col, int):
+                    # 인덱스로 접근
+                    result_df[f'n{i}'] = pd.to_numeric(df.iloc[:, col], errors='coerce')
+                else:
+                    # 컬럼명으로 접근
+                    result_df[f'n{i}'] = pd.to_numeric(df[col], errors='coerce')
+
+        # 보너스 번호 (선택적)
+        for col in df.columns:
+            col_str = str(col).strip() if col is not None else ""
+            col_lower = col_str.lower()
+            if '보너스' in col_lower or 'bonus' in col_lower:
+                result_df['bonus'] = pd.to_numeric(df[col], errors='coerce')
+                break
+
+        # NaN 제거
+        result_df = result_df.dropna(subset=[f'n{i}' for i in range(1, 7)])
+
+        # 숫자 컬럼을 int로 변환
+        for i in range(1, 7):
+            result_df[f'n{i}'] = result_df[f'n{i}'].astype(int)
+
+        # 1~45 범위 검증
+        for i in range(1, 7):
+            mask = (result_df[f'n{i}'] >= 1) & (result_df[f'n{i}'] <= 45)
+            if not mask.all():
+                raise ValueError(f"n{i} 컬럼에 1~45 범위를 벗어난 값이 있습니다.")
+
+        print(f"[DEBUG] Excel 로드 성공: {len(result_df)}행")
+        return result_df.reset_index(drop=True)
+
     def _train_ml_model(self):
         """ML 모델 학습 (별도 스레드에서 실행)"""
-        # CSV 로드 확인
+        # 데이터 로드 확인
         if self.history_df is None or self.history_df.empty:
             messagebox.showwarning(
-                "CSV 필요",
-                "먼저 'CSV 불러오기' 버튼으로 과거 당첨 데이터를 로드하세요."
+                "데이터 필요",
+                "먼저 '데이터 불러오기' 버튼으로 과거 당첨 데이터를 로드하세요."
             )
             return
 
@@ -703,26 +940,59 @@ class LottoApp(tk.Tk):
             # 학습 데이터 준비 (시간 정보 포함)
             pos_sets = []
             pos_meta = []  # (round, date) 시간 정보 저장
-            for row in self.history_df.itertuples(index=False):
-                # round와 date 정보 추출
-                try:
-                    round_num = int(row[0]) if len(row) > 0 else None
-                    date_str = str(row[1]) if len(row) > 1 else None
-                except (ValueError, IndexError):
-                    round_num = None
-                    date_str = None
 
-                nums = []
-                for val in row:
+            # n1~n6 컬럼 확인
+            num_cols = [f'n{i}' for i in range(1, 7)]
+            has_n_cols = all(col in self.history_df.columns for col in num_cols)
+
+            if has_n_cols:
+                # n1~n6 컬럼이 있으면 직접 추출
+                for idx, row in self.history_df.iterrows():
                     try:
-                        v = int(val)
-                        if 1 <= v <= 45:
-                            nums.append(v)
-                    except (ValueError, TypeError):
+                        # round와 date 정보 추출
+                        round_num = int(row['round']) if 'round' in row and pd.notna(row['round']) else None
+                        date_str = str(row['date']) if 'date' in row and pd.notna(row['date']) else None
+
+                        # n1~n6 추출
+                        nums = [int(row[f'n{i}']) for i in range(1, 7)]
+                        if all(1 <= n <= 45 for n in nums):
+                            pos_sets.append(sorted(nums))
+                            pos_meta.append((round_num, date_str))
+                    except (ValueError, TypeError, KeyError):
                         continue
-                if len(nums) == 6:
-                    pos_sets.append(sorted(nums))
-                    pos_meta.append((round_num, date_str))
+            else:
+                # 이전 방식: 전체 순회
+                for row in self.history_df.itertuples(index=False):
+                    # round와 date 정보 추출
+                    try:
+                        round_num = int(row[0]) if len(row) > 0 else None
+                        date_str = str(row[1]) if len(row) > 1 else None
+                    except (ValueError, IndexError):
+                        round_num = None
+                        date_str = None
+
+                    nums = []
+                    for val in row:
+                        try:
+                            v = int(val)
+                            if 1 <= v <= 45:
+                                nums.append(v)
+                        except (ValueError, TypeError):
+                            continue
+                    if len(nums) == 6:
+                        pos_sets.append(sorted(nums))
+                        pos_meta.append((round_num, date_str))
+
+            # 데이터 검증
+            if len(pos_sets) == 0:
+                raise ValueError(
+                    "학습 데이터가 없습니다.\n"
+                    "Excel 파일에 n1~n6 컬럼이 있고 1~45 범위의 숫자가 있는지 확인하세요.\n"
+                    f"DataFrame 컬럼: {list(self.history_df.columns)}\n"
+                    f"DataFrame 크기: {len(self.history_df)}행"
+                )
+
+            print(f"   [데이터] {len(pos_sets)}개 당첨번호 추출됨")
 
             # 음성 샘플: 편향된 조합 생성
             n_neg = len(pos_sets) * 5
@@ -1046,7 +1316,7 @@ class LottoApp(tk.Tk):
         if self.hist_strategy.get() != "사용 안 함":
             if self.history_df is None:
                 messagebox.showwarning(
-                    "알림", "히스토리 전략 사용 시 CSV를 먼저 불러오세요."
+                    "알림", "히스토리 전략 사용 시 과거 데이터를 먼저 불러오세요."
                 )
                 return
             try:
@@ -1713,7 +1983,7 @@ class LottoApp(tk.Tk):
         if self.history_df is None or self.history_df.empty:
             messagebox.showwarning(
                 "알림",
-                "가상 조작 시뮬은 과거 히스토리가 필요합니다.\n먼저 CSV를 로드해 주세요.",
+                "가상 조작 시뮬은 과거 히스토리가 필요합니다.\n먼저 과거 데이터를 로드해 주세요.",
             )
             return
 
@@ -2036,7 +2306,7 @@ class LottoApp(tk.Tk):
     def _run_rigged_search(self):
         if self.history_df is None or self.history_df.empty:
             messagebox.showwarning(
-                "알림", "먼저 과거 CSV를 로드해야 가상 조작 시뮬이 가능합니다."
+                "알림", "먼저 과거 데이터를 로드해야 가상 조작 시뮬이 가능합니다."
             )
             return
 
@@ -2456,6 +2726,472 @@ class LottoApp(tk.Tk):
         txt.insert("1.0", help_text)
         txt.config(state="disabled")
         self.help_text_widget = txt
+
+    def _build_recombine_page(self):
+        """번호 재조합 페이지 구성"""
+        top = self.page_recombine
+
+        # Input section
+        input_frame = ttk.LabelFrame(top, text="입력 게임 (한 줄에 6개 숫자)")
+        input_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
+
+        input_scroll = ttk.Scrollbar(input_frame)
+        input_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.recomb_input_text = tk.Text(
+            input_frame,
+            height=10,
+            wrap="none",
+            yscrollcommand=input_scroll.set
+        )
+        self.recomb_input_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        input_scroll.config(command=self.recomb_input_text.yview)
+
+        # Control section
+        control_frame = ttk.Frame(top)
+        control_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        ttk.Label(control_frame, text="출력 개수:").pack(side=tk.LEFT, padx=(0, 5))
+
+        self.recomb_output_count = tk.IntVar(value=10)
+        ttk.Entry(
+            control_frame,
+            textvariable=self.recomb_output_count,
+            width=10
+        ).pack(side=tk.LEFT, padx=5)
+
+        self.recomb_button = ttk.Button(
+            control_frame,
+            text="재조합 실행",
+            command=self._on_recombine_click
+        )
+        self.recomb_button.pack(side=tk.LEFT, padx=10)
+
+        self.recomb_stop_btn = ttk.Button(
+            control_frame,
+            text="중지",
+            command=self._on_recombine_stop_click,
+            state="disabled"
+        )
+        self.recomb_stop_btn.pack(side=tk.LEFT, padx=5)
+
+        # Status section
+        status_frame = ttk.Frame(top)
+        status_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        self.recomb_status_label = ttk.Label(
+            status_frame,
+            text="대기 중 (게임을 붙여넣고 '재조합 실행'을 클릭하세요)"
+        )
+        self.recomb_status_label.pack(anchor="w", pady=(0, 5))
+
+        self.recomb_progress = ttk.Progressbar(
+            status_frame,
+            mode="determinate",
+            length=400
+        )
+        self.recomb_progress.pack(fill=tk.X)
+
+        # Output section
+        output_frame = ttk.LabelFrame(
+            top,
+            text="재조합 결과 (ML 점수 내림차순)"
+        )
+        output_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(5, 10))
+
+        output_scroll = ttk.Scrollbar(output_frame)
+        output_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.recomb_output_text = tk.Text(
+            output_frame,
+            height=15,
+            wrap="none",
+            yscrollcommand=output_scroll.set,
+            state="normal"
+        )
+        self.recomb_output_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        output_scroll.config(command=self.recomb_output_text.yview)
+
+    def _parse_recombine_input(self, text):
+        """재조합 입력 파싱 (유연한 형식 지원)
+
+        각 줄에서 1-45 범위의 숫자 6개만 추출합니다.
+        회차, 날짜, 보너스, ML 점수 등 다른 정보는 자동으로 무시됩니다.
+
+        지원 형식:
+        - "1 7 16 22 28 38"
+        - "1203회 2025.01.08 1 7 16 22 28 38 보너스:15"
+        - " 5 12 16 19 25 42  [ML: 99.67%]"  ← 재조합 결과도 바로 재입력 가능!
+        """
+        import re
+
+        sets = []
+        for line in text.strip().splitlines():
+            if not line.strip():
+                continue
+
+            # 모든 숫자 추출
+            numbers = re.findall(r'\d+', line)
+
+            # 1-45 범위의 숫자만 필터링
+            valid_nums = [int(n) for n in numbers if 1 <= int(n) <= 45]
+
+            # 처음 6개만 사용 (보너스 번호 제외)
+            if len(valid_nums) >= 6:
+                game = sorted(valid_nums[:6])
+                # 중복 체크
+                if len(set(game)) == 6:
+                    sets.append(game)
+                else:
+                    # 중복 있으면 건너뛰기
+                    continue
+            elif len(valid_nums) > 0:
+                # 6개 미만이지만 유효한 숫자가 있으면 경고용으로 기록
+                pass
+
+        if not sets:
+            raise ValueError("유효한 게임이 하나도 없습니다.\n각 줄에 1-45 범위의 숫자가 6개 이상 필요합니다.")
+
+        return sets
+
+    def _on_recombine_click(self):
+        """재조합 실행 버튼 클릭 핸들러"""
+        import threading
+        from itertools import combinations
+        import math
+
+        # 1. Get input text
+        input_text = self.recomb_input_text.get("1.0", tk.END).strip()
+        if not input_text:
+            messagebox.showerror("입력 오류", "입력이 비어있습니다.\n\n기존 로또 게임을 붙여넣어주세요.")
+            return
+
+        # 2. Parse input sets (재조합 전용 파싱 - 유연한 형식)
+        try:
+            sets = self._parse_recombine_input(input_text)
+        except Exception as e:
+            messagebox.showerror("입력 오류", f"입력 형식이 잘못되었습니다.\n\n{str(e)}")
+            return
+
+        # 3. Extract unique numbers
+        unique_nums = set()
+        for s in sets:
+            unique_nums.update(s)
+        unique_nums = sorted(list(unique_nums))
+
+        # 3-1. 출력 개수를 입력 게임 수와 동일하게 자동 설정 (사용자가 기본값 10을 수정하지 않았을 때만)
+        n_input_games = len(sets)
+        current_output = self.recomb_output_count.get()
+        if current_output == 10:  # 기본값을 그대로 두었으면
+            auto_output = max(10, n_input_games)  # 입력과 동일, 최소 10개
+            self.recomb_output_count.set(auto_output)
+            self.after(0, lambda: None)  # UI 업데이트 트리거
+
+        # 4. Validate unique number count
+        n_unique = len(unique_nums)
+        if n_unique < 6:
+            messagebox.showerror(
+                "번호 부족",
+                f"최소 6개 이상의 고유 번호가 필요합니다.\n\n현재: {n_unique}개"
+            )
+            return
+
+        if n_unique == 6:
+            messagebox.showinfo(
+                "조합 1개",
+                f"고유 번호가 정확히 6개입니다.\n조합은 1개만 가능합니다.\n\n번호: {' '.join(map(str, unique_nums))}"
+            )
+            # Generate the single combination and display
+            self.recomb_output_text.delete("1.0", tk.END)
+            if self.ml_model is not None:
+                try:
+                    next_round, next_date = get_next_round_info(self.history_df)
+                    scores = ml_score_sets_batch(
+                        [unique_nums],
+                        self.ml_model,
+                        history_df=self.history_df,
+                        round_num=next_round,
+                        date_str=next_date
+                    )
+                    self.recomb_output_text.insert("1.0", sets_to_text_with_scores([unique_nums], scores))
+                except Exception:
+                    self.recomb_output_text.insert("1.0", sets_to_text([unique_nums]))
+            else:
+                self.recomb_output_text.insert("1.0", sets_to_text([unique_nums]))
+            return
+
+        if n_unique > 40:
+            n_combos = math.comb(n_unique, 6)
+            est_time_min = n_combos / 60000  # Rough estimate: 60K combos/min
+            messagebox.showerror(
+                "번호 과다",
+                f"고유 번호가 너무 많습니다 ({n_unique}개).\n40개 이하로 줄여주세요.\n\n"
+                f"예상 조합 수: {n_combos:,}개\n"
+                f"예상 시간: ~{est_time_min:.1f}분"
+            )
+            return
+
+        # 5. Warn for 35-40 unique numbers
+        if 35 <= n_unique <= 40:
+            n_combos = math.comb(n_unique, 6)
+            est_time_min = n_combos / 60000
+            result = messagebox.askyesno(
+                "조합 수 많음",
+                f"조합 수가 많습니다.\n\n"
+                f"고유 번호: {n_unique}개\n"
+                f"예상 조합 수: {n_combos:,}개\n"
+                f"예상 시간: ~{est_time_min:.1f}분\n\n"
+                f"계속하시겠습니까?"
+            )
+            if not result:
+                return
+
+        # 6. Get output count
+        try:
+            output_count = self.recomb_output_count.get()
+            if output_count < 1:
+                messagebox.showerror("출력 개수 오류", "출력 개수는 1 이상이어야 합니다.")
+                return
+        except Exception:
+            messagebox.showerror("출력 개수 오류", "출력 개수를 올바르게 입력해주세요.")
+            return
+
+        # 7. Clear output and reset progress
+        self.recomb_output_text.delete("1.0", tk.END)
+        self.recomb_progress['value'] = 0
+
+        # 8. Disable button, enable stop button
+        self.recomb_button.config(state="disabled")
+        self.recomb_stop_btn.config(state="normal")
+
+        # 9. Create stop flag and start worker thread
+        self.recomb_stop_flag = threading.Event()
+
+        thread = threading.Thread(
+            target=self._recombine_worker,
+            args=(unique_nums, output_count, self.recomb_stop_flag),
+            daemon=True
+        )
+        thread.start()
+
+    def _recombine_worker(self, unique_nums, output_count, stop_flag):
+        """재조합 백그라운드 작업 (별도 스레드)"""
+        from itertools import combinations
+        import time
+
+        try:
+            # 1. Generate ALL combinations (청크로 나눠서 UI 반응성 유지)
+            self.after(0, lambda: self._update_recomb_status("조합 생성 중..."))
+
+            # 전체 조합 수 미리 계산
+            import math
+            total = math.comb(len(unique_nums), 6)
+
+            # 조합을 청크로 생성 (메모리 효율 + UI 반응성)
+            all_combos = list(combinations(unique_nums, 6))
+
+            self.after(0, lambda: self._update_recomb_status(
+                f"조합 생성 완료: {total:,}개"
+            ))
+
+            # 2. Convert to list[list[int]] format
+            sets = [sorted(list(c)) for c in all_combos]
+
+            # 3. Check if ML model is loaded
+            if self.ml_model is None:
+                # No ML model - show warning and return without scoring
+                self.after(0, lambda: self._on_recombine_no_ml(sets, output_count))
+                return
+
+            # 4. Calculate next round info
+            try:
+                next_round, next_date = get_next_round_info(self.history_df)
+            except Exception:
+                next_round, next_date = None, None
+
+            # 5. ML score in batches (⚡ Numba JIT 배치 처리 + 멀티프로세싱)
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+
+            # 큰 배치로 Numba 배치 함수 최대 활용
+            batch_size = 50000  # 큰 배치 = Numba 병렬 최적화
+            n_workers = min(36, max(4, (total + batch_size - 1) // batch_size))
+
+            self.after(0, lambda: self._update_recomb_status(
+                f"ML 점수 계산 중... ({n_workers}개 프로세스, Numba JIT 배치)"
+            ))
+
+            # 배치 준비
+            batches = []
+            for i in range(0, len(sets), batch_size):
+                batch = sets[i:i+batch_size]
+                batches.append(batch)
+
+            # ProcessPool로 병렬 처리
+            all_scores = []
+            completed = 0
+            last_update_time = time.time()
+
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                # Submit all batches
+                futures = []
+                for batch in batches:
+                    if stop_flag.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        self.after(0, lambda: self._on_recombine_cancelled())
+                        return
+
+                    future = executor.submit(
+                        ml_score_sets_batch,
+                        batch,
+                        self.ml_model,
+                        self.history_weights,
+                        self.history_df,
+                        next_round,
+                        next_date
+                    )
+                    futures.append(future)
+
+                # Collect results as they complete
+                for future in as_completed(futures):
+                    if stop_flag.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        self.after(0, lambda: self._on_recombine_cancelled())
+                        return
+
+                    batch_scores = future.result()
+                    all_scores.extend(batch_scores)
+
+                    # Update progress (throttle: 0.2초마다만 업데이트)
+                    completed += len(batch_scores)
+                    current_time = time.time()
+                    if current_time - last_update_time > 0.2 or completed >= total:
+                        progress = completed / total * 100
+                        self.after(0, lambda p=progress: self._update_recomb_progress(p))
+                        last_update_time = current_time
+
+            # 6. 상위 N개 선택 (메모리 효율적 방법 사용)
+            import heapq
+
+            actual_output = min(output_count, len(sets))
+
+            # 조합 수가 많으면 heap 사용 (메모리 절약)
+            if len(sets) > output_count * 5:
+                # heapq.nlargest로 상위 N개만 추출 (메모리 효율)
+                self.after(0, lambda: self._update_recomb_status(f"상위 {actual_output}개 선택 중... (메모리 최적화)"))
+                top_n = heapq.nlargest(
+                    actual_output,
+                    zip(sets, all_scores),
+                    key=lambda x: x[1]
+                )
+                top_sets = [s[0] for s in top_n]
+                top_scores = [s[1] for s in top_n]
+            else:
+                # 조합 수가 적으면 전체 정렬 (빠름)
+                scored_sets = sorted(
+                    zip(sets, all_scores),
+                    key=lambda x: x[1],
+                    reverse=True
+                )
+                top_n = scored_sets[:actual_output]
+                top_sets = [s[0] for s in top_n]
+                top_scores = [s[1] for s in top_n]
+
+            # 8. Callback to main thread
+            self.after(0, lambda: self._on_recombine_complete(top_sets, top_scores, output_count))
+
+        except Exception as e:
+            import traceback
+            error_msg = f"{str(e)}\n\n{traceback.format_exc()}"
+            self.after(0, lambda: self._on_recombine_error(error_msg))
+
+    def _update_recomb_status(self, text):
+        """Update status label"""
+        if hasattr(self, 'recomb_status_label') and self.recomb_status_label:
+            self.recomb_status_label.config(text=text)
+
+    def _update_recomb_progress(self, percent):
+        """Update progress bar"""
+        if hasattr(self, 'recomb_progress') and self.recomb_progress:
+            self.recomb_progress['value'] = percent
+        if hasattr(self, 'recomb_status_label') and self.recomb_status_label:
+            self.recomb_status_label.config(
+                text=f"ML 점수 계산 중... {percent:.1f}%"
+            )
+
+    def _on_recombine_complete(self, sets, scores, requested_count):
+        """Success callback"""
+        # Display results with scores
+        self.recomb_output_text.delete("1.0", tk.END)
+        self.recomb_output_text.insert("1.0", sets_to_text_with_scores(sets, scores))
+
+        # Update status
+        actual_count = len(sets)
+        if actual_count < requested_count:
+            status_text = f"완료! {actual_count}개 게임 생성 (요청: {requested_count}개, 가능한 최대: {actual_count}개)"
+        else:
+            status_text = f"완료! {actual_count}개 게임 생성 완료 (ML 점수 내림차순)"
+        self.recomb_status_label.config(text=status_text)
+        self.recomb_progress['value'] = 100
+
+        # Re-enable button
+        self.recomb_button.config(state="normal")
+        self.recomb_stop_btn.config(state="disabled")
+
+        messagebox.showinfo("완료", f"{actual_count}개 게임 재조합 완료!")
+
+    def _on_recombine_no_ml(self, sets, requested_count):
+        """Handle case when ML model is not loaded"""
+        result = messagebox.askyesno(
+            "ML 모델 없음",
+            "ML 모델이 로드되지 않았습니다.\n"
+            "재조합은 가능하지만 ML 점수를 계산할 수 없습니다.\n\n"
+            "계속하시겠습니까? (결과는 랜덤 순서로 표시됩니다)"
+        )
+
+        if not result:
+            self.after(0, lambda: self._on_recombine_cancelled())
+            return
+
+        # Take random sample or all if less than requested
+        import random
+        actual_count = min(requested_count, len(sets))
+        selected_sets = random.sample(sets, actual_count) if actual_count < len(sets) else sets[:actual_count]
+
+        # Display without scores
+        self.recomb_output_text.delete("1.0", tk.END)
+        self.recomb_output_text.insert("1.0", sets_to_text(selected_sets))
+
+        # Update status
+        self.recomb_status_label.config(text=f"완료! {actual_count}개 게임 생성 (ML 점수 없음)")
+        self.recomb_progress['value'] = 100
+
+        # Re-enable button
+        self.recomb_button.config(state="normal")
+        self.recomb_stop_btn.config(state="disabled")
+
+        messagebox.showinfo("완료", f"{actual_count}개 게임 재조합 완료! (ML 점수 없음)")
+
+    def _on_recombine_error(self, error_msg):
+        """Error callback"""
+        self.recomb_status_label.config(text="오류 발생")
+        self.recomb_button.config(state="normal")
+        self.recomb_stop_btn.config(state="disabled")
+        messagebox.showerror("재조합 오류", error_msg)
+
+    def _on_recombine_cancelled(self):
+        """Cancellation callback"""
+        self.recomb_status_label.config(text="취소됨")
+        self.recomb_progress['value'] = 0
+        self.recomb_button.config(state="normal")
+        self.recomb_stop_btn.config(state="disabled")
+        messagebox.showinfo("취소", "재조합이 취소되었습니다.")
+
+    def _on_recombine_stop_click(self):
+        """Stop button callback"""
+        if hasattr(self, 'recomb_stop_flag') and self.recomb_stop_flag:
+            self.recomb_stop_flag.set()
+            self.recomb_stop_btn.config(state="disabled")
+            self.recomb_status_label.config(text="취소 중...")
 
 
 if __name__ == "__main__":

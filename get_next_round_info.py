@@ -2,10 +2,11 @@
 다음 회차 정보 계산 유틸리티
 """
 from datetime import datetime, timedelta
+from typing import Optional, Tuple
 import pandas as pd
 
 
-def get_next_round_info(history_df: pd.DataFrame | None) -> tuple[int | None, str | None]:
+def get_next_round_info(history_df: Optional[pd.DataFrame]) -> Tuple[Optional[int], Optional[str]]:
     """
     히스토리 DataFrame에서 다음 회차 번호와 예상 날짜를 계산합니다.
 
